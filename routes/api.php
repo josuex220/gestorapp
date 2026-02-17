@@ -1,5 +1,6 @@
 <?php
 
+
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
@@ -9,13 +10,20 @@ use App\Http\Controllers\Api\ClientController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\ChargeController;
 use App\Http\Controllers\Api\FaqController;
+use App\Http\Controllers\Api\LearningController;
+use App\Http\Controllers\Api\LessonProgressController;
 use App\Http\Controllers\Api\MercadoPagoController;
 use App\Http\Controllers\Api\MercadoPagoWebhookController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PixConfigController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\PublicPixPaymentController;
 use App\Http\Controllers\Api\SecurityController;
 use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\SubscriptionController;
+use App\Http\Controllers\Api\PlatformPlanController;
+use App\Http\Controllers\Api\PlatformSubscriptionController;
+use App\Http\Controllers\Api\StripeWebhookController;
 
 Route::get('/user', function (Request $request) {
     return $request->user();
@@ -27,6 +35,9 @@ Route::prefix('auth')->group(function () {
 
     Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 });
+
+Route::get('/platform-plans', [PlatformPlanController::class, 'index']);
+Route::get('/platform-plans/{plan}', [PlatformPlanController::class, 'show']);
 
 /** API SUPPORT */
 Route::middleware('auth:sanctum')->group(function () {
@@ -140,3 +151,42 @@ Route::middleware('auth:sanctum')->prefix('integrations/mercadopago')->group(fun
 
 // Webhook publico (SEM auth)
 Route::post('webhooks/mercadopago', [MercadoPagoWebhookController::class, 'handle']);
+
+// API Learning
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('learning/tracks', [LearningController::class, 'index']);
+    Route::get('learning/tracks/{track}', [LearningController::class, 'show']);
+
+    // Progress tracking
+    Route::get('learning/progress', [LessonProgressController::class, 'index']);
+    Route::get('learning/progress/summary', [LessonProgressController::class, 'summary']);
+    Route::post('learning/progress', [LessonProgressController::class, 'store']);
+    Route::delete('learning/progress/{lessonId}', [LessonProgressController::class, 'destroy']);
+});
+
+
+//PIX PROGRESS
+Route::middleware('auth:sanctum')->group(function () {
+    Route::prefix('integrations/pix')->group(function () {
+        Route::get('config', [PixConfigController::class, 'show']);
+        Route::post('config', [PixConfigController::class, 'store']);
+        Route::delete('disconnect', [PixConfigController::class, 'disconnect']);
+        Route::delete('config', [PixConfigController::class, 'destroy']);
+    });
+});
+
+Route::get('public/pix/{chargeId}', [PublicPixPaymentController::class, 'show']);
+Route::post('public/pix/{chargeId}/proof', [PublicPixPaymentController::class, 'uploadProof']);
+Route::post('public/pix/{chargeId}/confirm', [PublicPixPaymentController::class, 'confirm']);
+
+Route::middleware('auth:sanctum')->prefix('platform-subscription')->group(function () {
+    Route::get('/', [PlatformSubscriptionController::class, 'show']);
+    Route::post('/checkout', [PlatformSubscriptionController::class, 'checkout']);
+    Route::post('/confirm', [PlatformSubscriptionController::class, 'confirmCheckout']);
+    Route::post('/reactivate', [PlatformSubscriptionController::class, 'reactivate']);
+    Route::post('/cancel', [PlatformSubscriptionController::class, 'cancel']);
+    Route::get('/invoices', [PlatformSubscriptionController::class, 'invoices']);
+    Route::post('/sync', [PlatformSubscriptionController::class, 'sync']);
+});
+
+Route::post('/webhooks/stripe', [StripeWebhookController::class, 'handle']);

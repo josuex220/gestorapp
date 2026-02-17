@@ -3,267 +3,393 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\StoreChargeRequest;
-use App\Http\Requests\UpdateChargeRequest;
-use App\Http\Resources\ChargeResource;
-use App\Models\Charge;
-use App\Models\Payment;
-use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
-use Illuminate\Http\Request;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class ChargeController extends Controller
 {
-    use AuthorizesRequests;
     /**
-     * Lista paginada de cobranças com filtros
+     * GET /api/charges
+     * List charges for the authenticated user.
      */
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(Request $request)
     {
-        $query = Charge::byUser(Auth::id())->with('client');
+        $user = Auth::user();
 
-        // Filtro de busca
-        if ($request->filled('search')) {
-            $query->search($request->search);
+        $query = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.user_id', $user->id)
+            ->orderBy('charges.created_at', 'desc');
+
+        // Filters
+        if ($search = $request->input('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('clients.name', 'like', "%{$search}%")
+                  ->orWhere('clients.email', 'like', "%{$search}%")
+                  ->orWhere('charges.description', 'like', "%{$search}%");
+            });
         }
 
-        // Filtro de status
-        if ($request->filled('status')) {
-            $query->byStatus($request->status);
+        if ($status = $request->input('status')) {
+            $query->where('status', $status);
         }
 
-        // Filtro por método de pagamento
-        if ($request->filled('payment_method')) {
-            $query->byPaymentMethod($request->payment_method);
+        if ($paymentMethod = $request->input('payment_method')) {
+            $query->where('payment_method', $paymentMethod);
         }
 
-        // Filtro por cliente
-        if ($request->filled('client_id')) {
-            $query->where('client_id', $request->client_id);
+        if ($paymentProvider = $request->input('payment_provider')) {
+            $query->where('payment_provider', $paymentProvider);
         }
 
-        // Filtro por período
-        if ($request->filled('date_from') || $request->filled('date_to')) {
-            $query->dateRange(
-                $request->input('date_from'),
-                $request->input('date_to')
-            );
+        if ($dateFrom = $request->input('date_from')) {
+            $query->where('due_date', '>=', $dateFrom);
         }
 
-        // Ordenação
-        $sortBy = $request->input('sort_by', 'created_at');
-        $sortOrder = $request->input('sort_order', 'desc');
-        $query->orderBy($sortBy, $sortOrder);
+        if ($dateTo = $request->input('date_to')) {
+            $query->where('due_date', '<=', $dateTo);
+        }
 
-        // Paginação
+        if ($clientId = $request->input('client_id')) {
+            $query->where('client_id', $clientId);
+        }
+
         $perPage = $request->input('per_page', 20);
         $charges = $query->paginate($perPage);
 
-        return ChargeResource::collection($charges);
+        // Transform each charge with computed fields
+        $charges->getCollection()->transform(function ($charge) {
+            return $this->transformCharge($charge);
+        });
+
+        return response()->json($charges);
     }
 
     /**
-     * Exibe detalhes de uma cobrança
+     * GET /api/charges/{id}
      */
-    public function show(Charge $charge): ChargeResource
+    public function show(string $id)
     {
-        $this->authorize('view', $charge);
-        $charge->load('client');
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->where('charges.user_id', $user->id)
+            ->first();
 
-        return new ChargeResource($charge);
-    }
-
-    /**
-     * Retorna resumo das cobranças
-     */
-    public function summary(Request $request): JsonResponse
-    {
-        $query = Charge::byUser(Auth::id());
-
-        if ($request->filled('date_from') || $request->filled('date_to')) {
-            $query->dateRange(
-                $request->input('date_from'),
-                $request->input('date_to')
-            );
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
         }
 
-        $pending = (clone $query)->pending();
-        $paid = (clone $query)->paid();
-        $overdue = (clone $query)->overdue();
-
-        return response()->json([
-            'pending_count' => $pending->count(),
-            'pending_amount' => (float) $pending->sum('amount'),
-            'paid_count' => $paid->count(),
-            'paid_amount' => (float) $paid->sum('amount'),
-            'overdue_count' => $overdue->count(),
-            'overdue_amount' => (float) $overdue->sum('amount'),
-            'total_count' => $query->count(),
-            'total_amount' => (float) $query->sum('amount'),
-        ]);
+        return response()->json($this->transformCharge($charge));
     }
 
     /**
-     * Cria uma nova cobrança
+     * POST /api/charges
+     * Create a new charge.
      */
-    public function store(StoreChargeRequest $request): JsonResponse
+    public function store(Request $request)
     {
-        $charge = Charge::create([
-            'user_id' => Auth::id(),
-            ...$request->validated(),
+        $user = Auth::user();
+
+        $validated = $request->validate([
+            'client_id'              => 'required|uuid|exists:clients,id',
+            'amount'                 => 'required|numeric|min:0.01',
+            'due_date'               => 'required|date',
+            'payment_method'         => 'required|in:pix,boleto,credit_card',
+            'payment_provider'       => 'nullable|in:mercado_pago,pix_manual',
+            'description'            => 'nullable|string|max:500',
+            'notification_channels'  => 'nullable|array',
+            'notification_channels.*'=> 'in:email,whatsapp,telegram',
+            'saved_card_id'          => 'nullable|string',
+            'installments'           => 'nullable|integer|min:1|max:12',
         ]);
 
-        $payment = Payment::create([
-            'user_id'       => Auth::id(),
-            'client_id'     => $charge->client_id,
-            'charge_id'     => $charge->id,
-            'amount'        => $charge->amount,
-            'net_amount'    => $charge->amount,
-            'payment_method'=> $charge->payment_method,
-            'status'        => 'pending',
-            'description'   => $charge->description,
-            'created_at'    => now(),
-            'updated_at'    => now()
-        ]);
+        // Get client info
+        $client = DB::table('clients')->where('id', $validated['client_id'])->first();
 
-        $charge->load('client');
-
-        // Enviar notificação inicial se configurado
-        if ($request->has('send_notification') && $request->send_notification) {
-            $charge->sendNotification();
+        if (!$client || $client->user_id != $user->id) {
+            return response()->json(['message' => 'Cliente não encontrado'], 404);
         }
 
-        return (new ChargeResource($charge))
-            ->response()
-            ->setStatusCode(201);
+        $id = (string) Str::uuid();
+
+        DB::table('charges')->insert([
+            'id'                    => $id,
+            'user_id'               => $user->id,
+            'client_id'             => $validated['client_id'],
+            'amount'                => $validated['amount'],
+            'due_date'              => $validated['due_date'],
+            'payment_method'        => $validated['payment_method'],
+            'payment_provider'      => $validated['payment_provider'] ?? null,
+            'status'                => 'pending',
+            'description'           => $validated['description'] ?? null,
+            'notification_channels' => json_encode($validated['notification_channels'] ?? ['email']),
+            'saved_card_id'         => $validated['saved_card_id'] ?? null,
+            'installments'          => $validated['installments'] ?? null,
+            'notification_count'    => 0,
+            'created_at'            => now(),
+            'updated_at'            => now(),
+        ]);
+
+        $charge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($charge), 201);
     }
 
     /**
-     * Atualiza uma cobrança existente
+     * PUT /api/charges/{id}
+     * Update a charge.
      */
-    public function update(UpdateChargeRequest $request, Charge $charge): ChargeResource
+    public function update(Request $request, string $id)
     {
-        $this->authorize('update', $charge);
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
 
-        $charge->update($request->validated());
-        $charge->load('client');
-
-        return new ChargeResource($charge->fresh());
-    }
-
-    /**
-     * Remove uma cobrança
-     */
-    public function destroy(Charge $charge): JsonResponse
-    {
-        $this->authorize('delete', $charge);
-
-        // Não permite excluir cobranças pagas
-        if ($charge->status === 'paid') {
-            return response()->json([
-                'message' => 'Cobranças pagas não podem ser excluídas',
-            ], 422);
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
         }
 
-        $charge->delete();
-
-        return response()->json([
-            'message' => 'Cobrança excluída com sucesso',
+        $validated = $request->validate([
+            'amount'                 => 'sometimes|numeric|min:0.01',
+            'due_date'               => 'sometimes|date',
+            'payment_method'         => 'sometimes|in:pix,boleto,credit_card',
+            'payment_provider'       => 'nullable|in:mercado_pago,pix_manual',
+            'description'            => 'nullable|string|max:500',
+            'notification_channels'  => 'nullable|array',
+            'notification_channels.*'=> 'in:email,whatsapp,telegram',
+            'status'                 => 'sometimes|in:pending,paid,overdue,cancelled',
+            'saved_card_id'          => 'nullable|string',
+            'installments'           => 'nullable|integer|min:1|max:12',
         ]);
+
+        $updateData = array_filter([
+            'amount'                => $validated['amount'] ?? null,
+            'due_date'              => $validated['due_date'] ?? null,
+            'payment_method'        => $validated['payment_method'] ?? null,
+            'payment_provider'      => array_key_exists('payment_provider', $validated) ? $validated['payment_provider'] : null,
+            'description'           => array_key_exists('description', $validated) ? $validated['description'] : null,
+            'notification_channels' => isset($validated['notification_channels']) ? json_encode($validated['notification_channels']) : null,
+            'saved_card_id'         => array_key_exists('saved_card_id', $validated) ? $validated['saved_card_id'] : null,
+            'installments'          => array_key_exists('installments', $validated) ? $validated['installments'] : null,
+            'updated_at'            => now(),
+        ], fn ($v) => $v !== null);
+
+        // Handle status transitions
+        if (isset($validated['status'])) {
+            $updateData['status'] = $validated['status'];
+            if ($validated['status'] === 'paid') {
+                $updateData['paid_at'] = now();
+            } elseif ($validated['status'] === 'cancelled') {
+                $updateData['cancelled_at'] = now();
+            }
+        }
+
+        DB::table('charges')->where('id', $id)->update($updateData);
+
+        $updatedCharge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($updatedCharge));
     }
 
     /**
-     * Atualiza o status da cobrança
+     * DELETE /api/charges/{id}
      */
-    public function updateStatus(Request $request, Charge $charge): ChargeResource
+    public function destroy(string $id)
     {
-        $this->authorize('update', $charge);
+        $user = Auth::user();
+        $deleted = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->delete();
 
-        $request->validate([
+        if (!$deleted) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
+        }
+
+        return response()->json(['message' => 'Cobrança excluída com sucesso']);
+    }
+
+    /**
+     * PATCH /api/charges/{id}/status
+     * Update charge status.
+     */
+    public function updateStatus(Request $request, string $id)
+    {
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
+        }
+
+        $validated = $request->validate([
             'status' => 'required|in:pending,paid,overdue,cancelled',
         ]);
 
+        $updateData = [
+            'status'     => $validated['status'],
+            'updated_at' => now(),
+        ];
 
-
-        $charge->update([
-            'status' => $request->status,
-            'paid_at' => $request->status === 'paid' ? now() : $charge->paid_at,
-            'cancelled_at' => $request->status === 'cancelled' ? now() : $charge->cancelled_at,
-        ]);
-
-        Payment::where('charge_id', $charge->id)->update([
-            'status' => $request->status,
-            'paid_at' => $request->status === 'paid' ? now() : $charge->paid_at,
-            'cancelled_at' => $request->status === 'cancelled' ? now() : $charge->cancelled_at,
-        ]);
-        return new ChargeResource($charge->fresh()->load('client'));
-    }
-
-    /**
-     * Reenvia notificação da cobrança
-     */
-    public function resendNotification(Request $request, Charge $charge): ChargeResource
-    {
-        $this->authorize('update', $charge);
-
-        if ($charge->status === 'paid') {
-            return response()->json([
-                'message' => 'Não é possível enviar notificação para cobranças pagas',
-            ], 422);
+        if ($validated['status'] === 'paid') {
+            $updateData['paid_at'] = now();
+        } elseif ($validated['status'] === 'cancelled') {
+            $updateData['cancelled_at'] = now();
         }
 
-        $channels = $request->input('channels', $charge->notification_channels);
-        $charge->sendNotification($channels);
+        DB::table('charges')->where('id', $id)->update($updateData);
 
-        return new ChargeResource($charge->fresh()->load('client'));
+        $updatedCharge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($updatedCharge));
     }
 
     /**
-     * Marca a cobrança como paga
+     * POST /api/charges/{id}/resend
+     * Resend notification for a charge.
      */
-    public function markAsPaid(Request $request, Charge $charge): ChargeResource
+    public function resend(string $id)
     {
-        $this->authorize('update', $charge);
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
 
-        Payment::where('charge_id', $charge->id)->update([
-            'status' => 'paid',
-            'paid_at' => $request->input('paid_at', now()),
-        ]);
-
-        $charge->update([
-            'status' => 'paid',
-            'paid_at' => $request->input('paid_at', now()),
-        ]);
-
-        return new ChargeResource($charge->fresh()->load('client'));
-    }
-
-    /**
-     * Cancela a cobrança
-     */
-    public function cancel(Request $request, Charge $charge): ChargeResource
-    {
-        $this->authorize('update', $charge);
-
-        if ($charge->status === 'paid') {
-            return response()->json([
-                'message' => 'Cobranças pagas não podem ser canceladas',
-            ], 422);
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
         }
 
-        $charge->update([
-            'status' => 'cancelled',
-            'cancelled_at' => now(),
-            'cancellation_reason' => $request->input('reason'),
+        // TODO: dispatch notification job
+
+        DB::table('charges')->where('id', $id)->update([
+            'last_notification_at' => now(),
+            'notification_count'   => ($charge->notification_count ?? 0) + 1,
+            'updated_at'           => now(),
         ]);
 
-        $charge->update([
-            'status' => 'cancelled',
-            'cancelled_at' => now(),
-        ]);
+        return response()->json(['message' => 'Notificação reenviada com sucesso']);
+    }
 
-        return new ChargeResource($charge->fresh()->load('client'));
+    /**
+     * GET /api/charges/summary
+     * Get summary stats for the authenticated user's charges.
+     */
+    public function summary(Request $request)
+    {
+        $user = Auth::user();
+
+        $query = DB::table('charges')->where('user_id', $user->id);
+
+        if ($dateFrom = $request->input('date_from')) {
+            $query->where('due_date', '>=', $dateFrom);
+        }
+
+        if ($dateTo = $request->input('date_to')) {
+            $query->where('due_date', '<=', $dateTo);
+        }
+
+        $charges = $query->get();
+
+        return response()->json([
+            'pending_count'  => $charges->where('status', 'pending')->count(),
+            'pending_amount' => (float) $charges->where('status', 'pending')->sum('amount'),
+            'paid_count'     => $charges->where('status', 'paid')->count(),
+            'paid_amount'    => (float) $charges->where('status', 'paid')->sum('amount'),
+            'overdue_count'  => $charges->where('status', 'overdue')->count(),
+            'overdue_amount' => (float) $charges->where('status', 'overdue')->sum('amount'),
+            'total_count'    => $charges->count(),
+            'total_amount'   => (float) $charges->sum('amount'),
+        ]);
+    }
+
+    // ─── Helper ──────────────────────────────────────────────────────────
+
+    /**
+     * Transform a raw charge DB record into the API response format.
+     */
+    private function transformCharge(object $charge): array
+    {
+        $dueDate = \Carbon\Carbon::parse($charge->due_date);
+        $now = now()->startOfDay();
+        $isOverdue = $charge->status === 'pending' && $dueDate->lt($now);
+        $daysUntilDue = $dueDate->gte($now) ? $now->diffInDays($dueDate) : 0;
+        $daysOverdue = $dueDate->lt($now) ? $dueDate->diffInDays($now) * -1 : null;
+
+        $methodLabels = [
+            'pix'         => 'PIX',
+            'boleto'      => 'Boleto',
+            'credit_card' => 'Cartão de Crédito',
+        ];
+
+        $statusLabels = [
+            'pending'   => 'Pendente',
+            'paid'      => 'Pago',
+            'overdue'   => 'Vencido',
+            'cancelled' => 'Cancelado',
+        ];
+
+        return [
+            'id'                    => $charge->id,
+            'user_id'               => $charge->user_id,
+            'client_id'             => $charge->client_id,
+            'client_name'           => $charge->client_name,
+            'client_email'          => $charge->client_email,
+            'client_phone'          => $charge->client_phone ?? null,
+            'amount'                => (float) $charge->amount,
+            'due_date'              => $charge->due_date,
+            'payment_method'        => $charge->payment_method,
+            'payment_provider'      => $charge->payment_provider ?? null,
+            'status'                => $charge->status,
+            'description'           => $charge->description ?? null,
+            'notification_channels' => json_decode($charge->notification_channels ?? '["email"]', true),
+            'created_at'            => $charge->created_at,
+            'updated_at'            => $charge->updated_at,
+            'paid_at'               => $charge->paid_at ?? null,
+            'cancelled_at'          => $charge->cancelled_at ?? null,
+            'last_notification_at'  => $charge->last_notification_at ?? null,
+            'notification_count'    => (int) ($charge->notification_count ?? 0),
+            'saved_card_id'         => $charge->saved_card_id ?? null,
+            'installments'          => $charge->installments ?? null,
+            // Mercado Pago fields
+            'mp_preference_id'      => $charge->mp_preference_id ?? null,
+            'mp_payment_id'         => $charge->mp_payment_id ?? null,
+            'mp_init_point'         => $charge->mp_init_point ?? null,
+            'mp_sandbox_init_point' => $charge->mp_sandbox_init_point ?? null,
+            // Proof fields
+            'proof_path'            => $charge->proof_path ?? null,
+            'proof_uploaded_at'     => $charge->proof_uploaded_at ?? null,
+            'client_confirmed_at'   => $charge->client_confirmed_at ?? null,
+            // Computed
+            'formatted_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
+            'is_overdue'            => $isOverdue,
+            'days_until_due'        => $daysUntilDue,
+            'days_overdue'          => $daysOverdue,
+            'payment_method_label'  => $methodLabels[$charge->payment_method] ?? $charge->payment_method,
+            'status_label'          => $statusLabels[$charge->status] ?? $charge->status,
+        ];
     }
 }

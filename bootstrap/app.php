@@ -6,6 +6,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Route;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -13,11 +14,20 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        then: function ($router) {
+            Route::middleware('api')
+                ->prefix('api/admin')
+                ->group(base_path('routes/api_admin.php'));
+        },
+
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->append(UpdateSessionActivity::class);
         $middleware->validateCsrfTokens(except: [
             'api/webhooks/mercadopago',
+        ]);
+        $middleware->alias([
+            'is_admin' => \App\Http\Middleware\EnsureIsAdmin::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
