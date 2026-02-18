@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ResellerNotificationSetting;
+use App\Models\ResellerRenewalLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -21,17 +23,24 @@ class ResellerController extends Controller
         $credits = $account->reseller_credits ?? 0;
         $creditsUsed = $account->clients()->count() ?? 0;
 
+        // Count pending charges linked to this sub-account
+        $pendingChargesCount = DB::table('charges')
+            ->where('reseller_charge_account_id', $account->id)
+            ->whereIn('status', ['pending', 'overdue'])
+            ->count();
+
         return [
-            'id'           => $account->id,
-            'name'         => $account->name,
-            'email'        => $account->email,
-            'phone'        => $account->phone,
-            'credits'      => $credits,
-            'credits_used' => $creditsUsed,
-            'price'        => $account->reseller_price !== null ? (float) $account->reseller_price : null,
-            'expires_at'   => $account->reseller_expires_at?->toISOString(),
-            'status'       => $account->status,
-            'created_at'   => $account->created_at->toISOString(),
+            'id'                     => $account->id,
+            'name'                   => $account->name,
+            'email'                  => $account->email,
+            'phone'                  => $account->phone,
+            'credits'                => $credits,
+            'credits_used'           => $creditsUsed,
+            'price'                  => $account->reseller_price !== null ? (float) $account->reseller_price : null,
+            'expires_at'             => $account->reseller_expires_at?->toISOString(),
+            'status'                 => $account->status,
+            'created_at'             => $account->created_at->toISOString(),
+            'pending_charges_count'  => $pendingChargesCount,
         ];
     }
 
@@ -181,13 +190,16 @@ class ResellerController extends Controller
         }
 
         $validated = $request->validate([
-            'name'       => 'required|string|max:255',
-            'email'      => 'required|email|unique:users,email',
-            'phone'      => 'nullable|string|max:20',
-            'password'   => 'nullable|string|min:6|max:100',
-            'credits'    => 'required|integer|min:-1',
-            'price'      => 'nullable|numeric|min:0|max:999999.99',
-            'expires_at' => 'nullable|date|after:today|before_or_equal:' . now()->addYears(5)->toDateString(),
+            'name'                    => 'required|string|max:255',
+            'email'                   => 'required|email|unique:users,email',
+            'phone'                   => 'nullable|string|max:20',
+            'password'                => 'nullable|string|min:6|max:100',
+            'credits'                 => 'required|integer|min:-1',
+            'price'                   => 'nullable|numeric|min:0|max:999999.99',
+            'expires_at'              => 'nullable|date|after:today|before_or_equal:' . now()->addYears(5)->toDateString(),
+            'auto_charge'             => 'nullable|boolean',
+            'charge_payment_provider' => 'nullable|required_if:auto_charge,true|in:mercado_pago,pix_manual',
+            'charge_payment_method'   => 'nullable|in:pix,boleto,credit_card',
         ], [
             'price.numeric'          => 'O preço deve ser um valor numérico.',
             'price.min'              => 'O preço não pode ser negativo.',
@@ -229,7 +241,66 @@ class ResellerController extends Controller
             'status'              => 'active',
         ]);
 
-        return response()->json($this->mapAccountResponse($account), 201);
+        $response = $this->mapAccountResponse($account);
+
+        // ── Auto-charge: gerar cobrança automaticamente ──
+        if (!empty($validated['auto_charge']) && $validated['price'] > 0) {
+            $provider = $validated['charge_payment_provider'] ?? 'pix_manual';
+            $method   = $validated['charge_payment_method'] ?? 'pix';
+
+            // Auto-create client record for the charge
+            $client = DB::table('clients')
+                ->where('user_id', $user->id)
+                ->where('email', $account->email)
+                ->first();
+
+            if (!$client) {
+                $clientId = (string) Str::uuid();
+                DB::table('clients')->insert([
+                    'id'         => $clientId,
+                    'user_id'    => $user->id,
+                    'name'       => $account->name,
+                    'email'      => $account->email,
+                    'phone'      => $account->phone,
+                    'is_active'  => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            } else {
+                $clientId = $client->id;
+            }
+
+            $chargeId = (string) Str::uuid();
+            DB::table('charges')->insert([
+                'id'                           => $chargeId,
+                'user_id'                      => $user->id,
+                'client_id'                    => $clientId,
+                'amount'                       => $validated['price'],
+                'due_date'                     => now()->addDays(3)->toDateString(),
+                'payment_method'               => $method,
+                'payment_provider'             => $provider,
+                'status'                       => 'pending',
+                'description'                  => "Cobrança sub-conta: {$account->name}",
+                'notification_channels'        => json_encode(['email']),
+                'notification_count'           => 0,
+                'reseller_charge_account_id'   => $account->id,
+                'created_at'                   => now(),
+                'updated_at'                   => now(),
+            ]);
+
+            $response['auto_charge'] = [
+                'charge_id' => $chargeId,
+                'amount'    => (float) $validated['price'],
+                'status'    => 'pending',
+            ];
+
+            if ($provider === 'pix_manual') {
+                $baseUrl = config('app.frontend_url', config('app.url'));
+                $response['auto_charge']['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
+            }
+        }
+
+        return response()->json($response, 201);
     }
 
     /**
@@ -448,4 +519,101 @@ class ResellerController extends Controller
             'channels'   => $settings->channels,
         ]);
     }
+    /**
+     * POST /api/reseller/accounts/{id}/charge
+     *
+     * Creates a charge for a sub-account using the reseller's payment integrations.
+     * The charge is created under the reseller's user_id (so it appears in their charges list)
+     * but linked to the sub-account via the reseller_charge_account_id column.
+     *
+     * When the charge is paid (via webhook), the sub-account is automatically
+     * activated and/or renewed.
+     */
+    public function charge(Request $request, string $id): JsonResponse
+    {
+        $reseller = $request->user();
+
+        $account = User::where('id', $id)
+            ->where('reseller_id', $reseller->id)
+            ->firstOrFail();
+
+        $validated = $request->validate([
+            'amount'           => 'required|numeric|min:0.01|max:999999.99',
+            'due_date'         => 'required|date|after_or_equal:today',
+            'payment_provider' => 'required|in:mercado_pago,pix_manual',
+            'payment_method'   => 'required|in:pix,boleto,credit_card',
+            'description'      => 'nullable|string|max:500',
+        ], [
+            'amount.required'           => 'O valor é obrigatório.',
+            'amount.min'                => 'O valor mínimo é R$ 0,01.',
+            'due_date.required'         => 'A data de vencimento é obrigatória.',
+            'due_date.after_or_equal'   => 'A data de vencimento deve ser a partir de hoje.',
+            'payment_provider.required' => 'O provedor de pagamento é obrigatório.',
+            'payment_method.required'   => 'A forma de pagamento é obrigatória.',
+        ]);
+
+        // First, check if the sub-account has a client record for the reseller.
+        // If not, auto-create one so the charge has a valid client_id.
+        $client = DB::table('clients')
+            ->where('user_id', $reseller->id)
+            ->where('email', $account->email)
+            ->first();
+
+        if (!$client) {
+            $clientId = (string) Str::uuid();
+            DB::table('clients')->insert([
+                'id'         => $clientId,
+                'user_id'    => $reseller->id,
+                'name'       => $account->name,
+                'email'      => $account->email,
+                'phone'      => $account->phone,
+                'is_active'  => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } else {
+            $clientId = $client->id;
+        }
+
+        // Create the charge under the reseller's account
+        $chargeId = (string) Str::uuid();
+        $description = $validated['description']
+            ?? "Cobrança sub-conta: {$account->name}";
+
+        DB::table('charges')->insert([
+            'id'                           => $chargeId,
+            'user_id'                      => $reseller->id,
+            'client_id'                    => $clientId,
+            'amount'                       => $validated['amount'],
+            'due_date'                     => $validated['due_date'],
+            'payment_method'               => $validated['payment_method'],
+            'payment_provider'             => $validated['payment_provider'],
+            'status'                       => 'pending',
+            'description'                  => $description,
+            'notification_channels'        => json_encode(['email']),
+            'notification_count'           => 0,
+            'reseller_charge_account_id'   => $account->id,
+            'created_at'                   => now(),
+            'updated_at'                   => now(),
+        ]);
+
+        // Return the created charge with payment URL if applicable
+        $response = [
+            'charge_id' => $chargeId,
+            'amount'    => (float) $validated['amount'],
+            'status'    => 'pending',
+        ];
+
+        // For PIX manual, generate the public payment URL
+        if ($validated['payment_provider'] === 'pix_manual') {
+            $baseUrl = config('app.frontend_url', config('app.url'));
+            $response['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
+        }
+
+        // For Mercado Pago, the preference will be created when the user
+        // copies the link (same flow as regular charges)
+
+        return response()->json($response, 201);
+    }
+
 }

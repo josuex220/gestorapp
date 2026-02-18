@@ -3,9 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\ResellerChargeService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class ChargeController extends Controller
@@ -191,6 +192,7 @@ class ChargeController extends Controller
             $updateData['status'] = $validated['status'];
             if ($validated['status'] === 'paid') {
                 $updateData['paid_at'] = now();
+                ResellerChargeService::handleChargePaid($id);
             } elseif ($validated['status'] === 'cancelled') {
                 $updateData['cancelled_at'] = now();
             }
@@ -252,6 +254,8 @@ class ChargeController extends Controller
 
         if ($validated['status'] === 'paid') {
             $updateData['paid_at'] = now();
+            // Auto-renew sub-account if this is a reseller charge
+            ResellerChargeService::handleChargePaid($id);
         } elseif ($validated['status'] === 'cancelled') {
             $updateData['cancelled_at'] = now();
         }
@@ -295,7 +299,73 @@ class ChargeController extends Controller
     }
 
     /**
-     * GET /api/charges/summary
+     * PATCH /api/charges/{id}/mark-paid
+     * Manually mark a charge as paid.
+     */
+    public function markAsPaid(Request $request, string $id)
+    {
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
+        }
+
+        $paidAt = $request->input('paid_at') ? $request->input('paid_at') : now();
+
+        DB::table('charges')->where('id', $id)->update([
+            'status'     => 'paid',
+            'paid_at'    => $paidAt,
+            'updated_at' => now(),
+        ]);
+
+        // Auto-renew reseller sub-account if applicable
+        ResellerChargeService::handleChargePaid($id);
+
+        $updatedCharge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($updatedCharge));
+    }
+
+    /**
+     * PATCH /api/charges/{id}/cancel
+     * Cancel a charge.
+     */
+    public function cancel(Request $request, string $id)
+    {
+        $user = Auth::user();
+        $charge = DB::table('charges')
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$charge) {
+            return response()->json(['message' => 'Cobrança não encontrada'], 404);
+        }
+
+        DB::table('charges')->where('id', $id)->update([
+            'status'       => 'cancelled',
+            'cancelled_at' => now(),
+            'updated_at'   => now(),
+        ]);
+
+        $updatedCharge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($updatedCharge));
+    }
+
+     /* GET /api/charges/summary
      * Get summary stats for the authenticated user's charges.
      */
     public function summary(Request $request)

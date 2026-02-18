@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\UserPixConfig;
 use App\Models\User;
+use App\Services\ResellerChargeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -99,6 +100,10 @@ class PublicPixPaymentController extends Controller
     /**
      * POST /api/public/pix/{chargeId}/confirm
      * Client confirms they made the payment (without proof).
+     *
+     * If the PIX config does NOT require proof as mandatory,
+     * the charge is auto-approved and the reseller sub-account
+     * is automatically renewed (if applicable).
      */
     public function confirm(string $chargeId)
     {
@@ -108,10 +113,31 @@ class PublicPixPaymentController extends Controller
             return response()->json(['message' => 'Cobrança não encontrada'], 404);
         }
 
-        DB::table('charges')->where('id', $chargeId)->update([
-            'client_confirmed_at' => now(),
-            'updated_at'          => now(),
-        ]);
+        // Check if proof is mandatory
+        $pixConfig = UserPixConfig::where('user_id', $charge->user_id)
+            ->where('is_active', true)
+            ->first();
+
+        $proofRequired = $pixConfig && $pixConfig->proof_required;
+
+        if ($proofRequired) {
+            // Only record the confirmation, don't auto-approve
+            DB::table('charges')->where('id', $chargeId)->update([
+                'client_confirmed_at' => now(),
+                'updated_at'          => now(),
+            ]);
+        } else {
+            // Auto-approve: mark as paid
+            DB::table('charges')->where('id', $chargeId)->update([
+                'client_confirmed_at' => now(),
+                'status'              => 'paid',
+                'paid_at'             => now(),
+                'updated_at'          => now(),
+            ]);
+
+            // Auto-renew reseller sub-account if applicable
+            ResellerChargeService::handleChargePaid($chargeId);
+        }
 
         // Notify charge owner
         $this->notifyChargeOwner($charge, 'payment_confirmed');

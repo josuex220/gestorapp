@@ -204,4 +204,18 @@ Route::middleware('auth:sanctum')->prefix('reseller')->group(function () {
     Route::delete('accounts/{id}', [ResellerController::class, 'destroy']);
     Route::patch('accounts/{id}/renew', [ResellerController::class, 'renew']);
     Route::get('accounts/{id}/renewal-history', [ResellerController::class, 'renewalHistory']);
+    Route::post('accounts/{id}/charge', [ResellerController::class, 'charge']);
+});
+
+Route::prefix('api')->middleware('auth:sanctum')->group(function () {
+    Route::get('charges', [ChargeController::class, 'index']);
+    Route::get('charges/summary', [ChargeController::class, 'summary']);
+    Route::post('charges', [ChargeController::class, 'store']);
+    Route::get('charges/{id}', [ChargeController::class, 'show']);
+    Route::put('charges/{id}', [ChargeController::class, 'update']);
+    Route::delete('charges/{id}', [ChargeController::class, 'destroy']);
+    Route::patch('charges/{id}/status', [ChargeController::class, 'updateStatus']);
+    Route::patch('charges/{id}/mark-paid', [ChargeController::class, 'markAsPaid']);
+    Route::patch('charges/{id}/cancel', [ChargeController::class, 'cancel']);
+    Route::post('charges/{id}/resend', [ChargeController::class, 'resend']);
 });
