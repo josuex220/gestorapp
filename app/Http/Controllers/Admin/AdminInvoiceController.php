@@ -3,91 +3,206 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Http\Resources\Admin\InvoiceResource;
-use App\Models\Charge;
 use App\Models\PlatformInvoice;
-use Carbon\Carbon;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
+/**
+ * AdminInvoiceController
+ *
+ * Gerencia faturas da plataforma (tabela platform_invoices).
+ * Estas são as faturas de assinatura dos clientes do SaaS,
+ * NÃO as cobranças que os clientes criam para seus próprios clientes.
+ *
+ * Filtra automaticamente sub-contas (reseller_id) quando solicitado.
+ */
 class AdminInvoiceController extends Controller
 {
-    public function index(Request $request): JsonResponse
+    /**
+     * Lista faturas da plataforma com filtros.
+     */
+    public function index(Request $request)
     {
-        $query = Charge::with(['user', 'client']);
+        $query = PlatformInvoice::with(['user.platformPlan'])
+            ->latest('created_at');
 
-        if ($search = $request->query('search')) {
-            $query->where(function ($q) use ($search) {
-                $q->where('id', 'like', "%{$search}%")
-                  ->orWhereHas('user', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
-                  ->orWhereHas('client', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
+        // Excluir sub-contas de revendedores
+        if ($request->boolean('exclude_reseller', false)) {
+            $query->whereHas('user', function ($q) {
+                $q->whereNull('reseller_id');
             });
         }
 
-        if ($status = $request->query('status')) {
-            if ($status !== 'all') $query->where('status', $status);
+        // Filtro por busca (nome ou e-mail do cliente)
+        if ($search = $request->input('search')) {
+            $query->whereHas('user', function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('email', 'like', "%{$search}%");
+            });
         }
 
-        if ($eventType = $request->query('event_type')) {
-            if ($eventType !== 'all') $query->where('event_type', $eventType);
+        // Filtro por status
+        if ($status = $request->input('status')) {
+            $query->where('status', $status);
         }
 
-        if ($period = $request->query('period')) {
-            $query->where('period', $period);
+        // Filtro por tipo de evento
+        if ($eventType = $request->input('event_type')) {
+            $query->where('event_type', $eventType);
         }
 
-        $charges = $query->latest()->paginate($request->query('per_page', 10));
+        // Filtro por período
+        if ($period = $request->input('period')) {
+            switch ($period) {
+                case '7d':
+                    $query->where('created_at', '>=', now()->subDays(7));
+                    break;
+                case '30d':
+                    $query->where('created_at', '>=', now()->subDays(30));
+                    break;
+                case '90d':
+                    $query->where('created_at', '>=', now()->subDays(90));
+                    break;
+            }
+        }
 
-        return InvoiceResource::collection($charges)->response();
+        $perPage = $request->input('per_page', 10);
+        $invoices = $query->paginate($perPage);
+
+        // Transformar dados para o formato esperado pelo frontend
+        $invoices->getCollection()->transform(function ($invoice) {
+            return [
+                'id'            => $invoice->id,
+                'client_id'     => $invoice->user_id,
+                'client_name'   => $invoice->user->name ?? 'N/A',
+                'client_email'  => $invoice->user->email ?? '',
+                'plan'          => $invoice->user->platformPlan->name ?? 'N/A',
+                'amount'        => (float) $invoice->amount,
+                'status'        => $invoice->status,
+                'event_type'    => $invoice->event_type,
+                'due_date'      => $invoice->due_date,
+                'paid_at'       => $invoice->paid_at,
+                'period'        => $invoice->period ?? '',
+                'stripe_invoice_id' => $invoice->stripe_invoice_id,
+                'created_at'    => $invoice->created_at,
+                'updated_at'    => $invoice->updated_at,
+            ];
+        });
+
+        return response()->json($invoices);
     }
 
-    public function show(Charge $charge): JsonResponse
+    /**
+     * Resumo financeiro das faturas.
+     */
+    public function summary(Request $request)
     {
-        $charge->load(['user', 'client']);
-        return response()->json(new InvoiceResource($charge));
-    }
+        $baseQuery = PlatformInvoice::query();
 
-    public function summary(): JsonResponse
-    {
+        if ($request->boolean('exclude_reseller', false)) {
+            $baseQuery->whereHas('user', function ($q) {
+                $q->whereNull('reseller_id');
+            });
+        }
+
+        $totalReceived = (clone $baseQuery)->where('status', 'paid')->sum('amount');
+        $totalPending  = (clone $baseQuery)->where('status', 'pending')->sum('amount');
+        $totalOverdue  = (clone $baseQuery)->where('status', 'overdue')->sum('amount');
+
         return response()->json([
-            'total_received' => (float) Charge::where('status', 'paid')->sum('amount'),
-            'total_pending' => (float) Charge::where('status', 'pending')->sum('amount'),
-            'total_overdue' => (float) Charge::where('status', 'overdue')->sum('amount'),
+            'total_received' => (float) $totalReceived,
+            'total_pending'  => (float) $totalPending,
+            'total_overdue'  => (float) $totalOverdue,
         ]);
     }
 
     /**
-     * Event type distribution counts for the invoices/transactions page.
+     * Contagem por tipo de evento.
      */
-    public function eventCounts(): JsonResponse
+    public function eventCounts(Request $request)
     {
-        $counts = PlatformInvoice::selectRaw('event_type, COUNT(*) as count')
+        $baseQuery = PlatformInvoice::query();
+
+        if ($request->boolean('exclude_reseller', false)) {
+            $baseQuery->whereHas('user', function ($q) {
+                $q->whereNull('reseller_id');
+            });
+        }
+
+        $counts = (clone $baseQuery)
+            ->select('event_type', DB::raw('count(*) as total'))
             ->whereNotNull('event_type')
             ->groupBy('event_type')
-            ->pluck('count', 'event_type');
+            ->pluck('total', 'event_type');
 
         return response()->json([
-            'activation' => (int) ($counts['activation'] ?? 0),
-            'reactivation' => (int) ($counts['reactivation'] ?? 0),
-            'renewal' => (int) ($counts['renewal'] ?? 0),
-            'cancellation' => (int) ($counts['cancellation'] ?? 0),
+            'activation'    => $counts['activation'] ?? 0,
+            'reactivation'  => $counts['reactivation'] ?? 0,
+            'renewal'       => $counts['renewal'] ?? 0,
+            'cancellation'  => $counts['cancellation'] ?? 0,
         ]);
     }
 
-    public function markPaid(Charge $charge): JsonResponse
+    /**
+     * Detalhe de uma fatura específica.
+     */
+    public function show(string $id)
     {
-        $charge->update([
-            'status' => 'paid',
-            'paid_at' => Carbon::now(),
-        ]);
+        $invoice = PlatformInvoice::with(['user.platformPlan'])->findOrFail($id);
 
-        return response()->json(new InvoiceResource($charge->fresh(['user', 'client'])));
+        return response()->json([
+            'id'            => $invoice->id,
+            'client_id'     => $invoice->user_id,
+            'client_name'   => $invoice->user->name ?? 'N/A',
+            'client_email'  => $invoice->user->email ?? '',
+            'plan'          => $invoice->user->platformPlan->name ?? 'N/A',
+            'amount'        => (float) $invoice->amount,
+            'status'        => $invoice->status,
+            'event_type'    => $invoice->event_type,
+            'due_date'      => $invoice->due_date,
+            'paid_at'       => $invoice->paid_at,
+            'period'        => $invoice->period ?? '',
+            'stripe_invoice_id' => $invoice->stripe_invoice_id,
+            'created_at'    => $invoice->created_at,
+            'updated_at'    => $invoice->updated_at,
+        ]);
     }
 
-    public function cancel(Charge $charge): JsonResponse
+    /**
+     * Marcar fatura como paga.
+     */
+    public function markPaid(string $id)
     {
-        $charge->update(['status' => 'cancelled']);
+        $invoice = PlatformInvoice::findOrFail($id);
+        $invoice->update([
+            'status'  => 'paid',
+            'paid_at' => now(),
+        ]);
 
-        return response()->json(new InvoiceResource($charge->fresh(['user', 'client'])));
+        $invoice->load(['user.platformPlan']);
+
+        return response()->json([
+            'id'            => $invoice->id,
+            'client_id'     => $invoice->user_id,
+            'client_name'   => $invoice->user->name ?? 'N/A',
+            'client_email'  => $invoice->user->email ?? '',
+            'plan'          => $invoice->user->platformPlan->name ?? 'N/A',
+            'amount'        => (float) $invoice->amount,
+            'status'        => $invoice->status,
+            'event_type'    => $invoice->event_type,
+            'due_date'      => $invoice->due_date,
+            'paid_at'       => $invoice->paid_at,
+        ]);
+    }
+
+    /**
+     * Cancelar fatura.
+     */
+    public function cancel(string $id)
+    {
+        $invoice = PlatformInvoice::findOrFail($id);
+        $invoice->update(['status' => 'cancelled']);
+
+        return response()->json(['message' => 'Fatura cancelada com sucesso.']);
     }
 }

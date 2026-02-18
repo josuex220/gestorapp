@@ -61,10 +61,21 @@ Route::middleware(['auth:sanctum', 'is_admin'])->group(function () {
     // Invoices (Charges de todos os usuários - tabela charges)
     Route::get('invoices', [AdminInvoiceController::class, 'index']);
     Route::get('invoices/summary', [AdminInvoiceController::class, 'summary']);
+    Route::get('invoices/event-counts', [AdminInvoiceController::class, 'eventCounts']);
     Route::get('invoices/overdue', function () {
-        return InvoiceResource::collection(
-            Invoice::where('status', 'overdue')->with('user', 'platformPlan')->latest('due_date')->get()
-        );
+        return \App\Models\PlatformInvoice::where('status', 'overdue')
+            ->with('user.platformPlan')
+            ->latest('due_date')
+            ->get()
+            ->map(fn ($inv) => [
+                'id'           => $inv->id,
+                'client_name'  => $inv->user->name ?? 'N/A',
+                'client_email' => $inv->user->email ?? '',
+                'plan'         => $inv->user->platformPlan->name ?? 'N/A',
+                'amount'       => (float) $inv->amount,
+                'status'       => $inv->status,
+                'due_date'     => $inv->due_date,
+            ]);
     });
     Route::get('invoices/{invoice}', [AdminInvoiceController::class, 'show']);
     Route::patch('invoices/{invoice}/mark-paid', [AdminInvoiceController::class, 'markPaid']);
