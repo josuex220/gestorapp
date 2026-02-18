@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\CheckClientLimit;
 use App\Http\Middleware\UpdateSessionActivity;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -23,6 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->append(UpdateSessionActivity::class);
+        $middleware->append(CheckClientLimit::class);
         $middleware->validateCsrfTokens(except: [
             'api/webhooks/mercadopago',
         ]);

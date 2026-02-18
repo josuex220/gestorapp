@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\PlatformPlanController;
 use App\Http\Controllers\Api\PlatformSubscriptionController;
+use App\Http\Controllers\Api\ResellerController;
 use App\Http\Controllers\Api\StripeWebhookController;
 
 Route::get('/user', function (Request $request) {
@@ -190,3 +191,17 @@ Route::middleware('auth:sanctum')->prefix('platform-subscription')->group(functi
 });
 
 Route::post('/webhooks/stripe', [StripeWebhookController::class, 'handle']);
+
+Route::middleware('auth:sanctum')->prefix('reseller')->group(function () {
+    Route::get('summary',  [ResellerController::class, 'summary']);
+    Route::get('accounts', [ResellerController::class, 'index']);
+    Route::post('accounts', [ResellerController::class, 'store']);
+    Route::put('accounts/{id}', [ResellerController::class, 'update']);
+    Route::patch('accounts/{id}/toggle-status', [ResellerController::class, 'toggleStatus']);
+    Route::get('report',   [ResellerController::class, 'report']);
+    Route::get('notification-settings',  [ResellerController::class, 'getNotificationSettings']);
+    Route::put('notification-settings',  [ResellerController::class, 'updateNotificationSettings']);
+    Route::delete('accounts/{id}', [ResellerController::class, 'destroy']);
+    Route::patch('accounts/{id}/renew', [ResellerController::class, 'renew']);
+    Route::get('accounts/{id}/renewal-history', [ResellerController::class, 'renewalHistory']);
+});

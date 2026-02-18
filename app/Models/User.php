@@ -8,6 +8,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 use App\Models\PlatformPlan;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class User extends Authenticatable
@@ -19,7 +20,16 @@ class User extends Authenticatable
         'email',
         'phone',
         'password',
-        'platform_plan_id'
+        'platform_plan_id',
+        'status',
+        'stripe_subscription_id',
+        'subscription_ends_at',
+        'trial_ends_at',
+        'has_used_trial',
+        'reseller_id',
+        'reseller_price',
+        'reseller_credits',
+        'reseller_expires_at',
     ];
 
     protected $hidden = [
@@ -32,6 +42,11 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'subscription_ends_at' => 'datetime',
+            'trial_ends_at' => 'datetime',
+            'has_used_trial' => 'boolean',
+            'reseller_expires_at' => 'datetime',
+            'reseller_price' => 'decimal:2',
         ];
     }
 
@@ -104,7 +119,29 @@ class User extends Authenticatable
     {
         return $this->hasMany(UserLessonProgress::class);
     }
+    /**
+     * The reseller who owns this sub-account.
+     */
+    public function reseller(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reseller_id');
+    }
 
+    /**
+     * Sub-accounts managed by this reseller.
+     */
+    public function subAccounts(): HasMany
+    {
+        return $this->hasMany(User::class, 'reseller_id');
+    }
+
+    /**
+     * Reseller notification settings.
+     */
+    public function resellerNotificationSettings(): HasOne
+    {
+        return $this->hasOne(ResellerNotificationSetting::class);
+    }
     // ────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────

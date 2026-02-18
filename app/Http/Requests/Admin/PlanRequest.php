@@ -32,6 +32,7 @@ class PlanRequest extends FormRequest
             'privileges.custom_branding' => 'required|boolean',
             'privileges.has_trial' => 'required|boolean',
             'privileges.trial_days' => 'required|integer|min:0',
+            'privileges.reseller_sell' => 'required|boolean',
         ];
     }
 
