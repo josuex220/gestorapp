@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminIntegration;
 use App\Models\PlatformInvoice;
 use App\Models\PlatformPlan;
+use App\Services\MailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -292,6 +293,14 @@ class PlatformSubscriptionController extends Controller
                 'paid_at' => now(),
             ]);
 
+            // Enviar e-mail de ativação/reativação
+            MailService::subscriptionActivated($user->email, [
+                'name'       => $user->name,
+                'plan_name'  => $user->platformPlan->name ?? 'N/A',
+                'event_type' => $isReactivation ? 'reactivation' : 'activation',
+                'subject'    => $isReactivation ? 'Assinatura reativada!' : 'Assinatura ativada!',
+            ]);
+
             return response()->json([
                 'message' => 'Assinatura ativada com sucesso!',
                 'plan' => $user->platformPlan,
@@ -357,6 +366,14 @@ class PlatformSubscriptionController extends Controller
                         'description' => 'Reativação de assinatura (reversão de cancelamento) - Plano ' . ($user->platformPlan->name ?? 'N/A'),
                         'event_type' => 'reactivation',
                         'paid_at' => now(),
+                    ]);
+
+                    // Enviar e-mail de reativação
+                    MailService::subscriptionActivated($user->email, [
+                        'name'       => $user->name,
+                        'plan_name'  => $user->platformPlan->name ?? 'N/A',
+                        'event_type' => 'reactivation',
+                        'subject'    => 'Assinatura reativada!',
                     ]);
 
                     return response()->json([

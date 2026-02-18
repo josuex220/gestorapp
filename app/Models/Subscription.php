@@ -91,6 +91,11 @@ class Subscription extends Model
         return $this->hasMany(Payment::class);
     }
 
+    public function charges(): HasMany
+    {
+        return $this->hasMany(Charge::class);
+    }
+
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);

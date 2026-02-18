@@ -8,11 +8,14 @@ use App\Http\Requests\UpdateSubscriptionRequest;
 use App\Http\Resources\SubscriptionResource;
 use App\Models\Subscription;
 use App\Models\Plan;
+use App\Services\MailService;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class SubscriptionController extends Controller
 {
@@ -131,7 +134,39 @@ class SubscriptionController extends Controller
         );
 
         $subscription = Subscription::create($data);
+
+        // Gerar primeira cobrança automaticamente
+        $chargeId = (string) Str::uuid();
+        $dueDate = $subscription->start_date ?? now()->format('Y-m-d');
+        DB::table('charges')->insert([
+            'id' => $chargeId,
+            'user_id' => $subscription->user_id,
+            'client_id' => $subscription->client_id,
+            'subscription_id' => $subscription->id,
+            'amount' => $subscription->amount,
+            'due_date' => $dueDate,
+            'payment_method' => 'pix',
+            'status' => 'pending',
+            'description' => "Cobrança inicial - {$subscription->plan_name}",
+            'notification_channels' => json_encode(['email']),
+            'notification_count' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
         $subscription->load(['client', 'plan']);
+
+        // Enviar e-mail de nova cobrança ao cliente
+        $client = DB::table('clients')->where('id', $subscription->client_id)->first();
+        if ($client && $client->email) {
+            MailService::chargeCreated($client->email, [
+                'name'           => $client->name,
+                'amount'         => 'R$ ' . number_format($subscription->amount, 2, ',', '.'),
+                'due_date'       => \Carbon\Carbon::parse($dueDate)->format('d/m/Y'),
+                'description'    => "Cobrança inicial - {$subscription->plan_name}",
+                'payment_method' => 'pix',
+            ]);
+        }
 
         return (new SubscriptionResource($subscription))
             ->response()
@@ -197,6 +232,16 @@ class SubscriptionController extends Controller
             'suspension_reason' => $request->input('reason'),
         ]);
 
+        // Notificar cliente sobre suspensão
+        $client = DB::table('clients')->where('id', $subscription->client_id)->first();
+        if ($client && $client->email) {
+            MailService::send($client->email, 'Assinatura suspensa', 'subscription_suspended', [
+                'name'      => $client->name,
+                'plan_name' => $subscription->plan_name,
+                'reason'    => $request->input('reason') ?? 'Não informado',
+            ]);
+        }
+
         return new SubscriptionResource($subscription->fresh()->load(['client', 'plan']));
     }
 
@@ -222,6 +267,16 @@ class SubscriptionController extends Controller
             ),
         ]);
 
+        // Notificar cliente sobre reativação
+        $client = DB::table('clients')->where('id', $subscription->client_id)->first();
+        if ($client && $client->email) {
+            MailService::subscriptionActivated($client->email, [
+                'name'      => $client->name,
+                'plan_name' => $subscription->plan_name,
+                'subject'   => 'Assinatura reativada',
+            ]);
+        }
+
         return new SubscriptionResource($subscription->fresh()->load(['client', 'plan']));
     }
 
@@ -241,6 +296,15 @@ class SubscriptionController extends Controller
             'cancelled_at' => now(),
             'cancellation_reason' => $request->input('reason'),
         ]);
+
+        // Notificar cliente sobre cancelamento
+        $client = DB::table('clients')->where('id', $subscription->client_id)->first();
+        if ($client && $client->email) {
+            MailService::subscriptionCancelled($client->email, [
+                'name'      => $client->name,
+                'plan_name' => $subscription->plan_name,
+            ]);
+        }
 
         return new SubscriptionResource($subscription->fresh()->load(['client', 'plan']));
     }

@@ -85,9 +85,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('charges/summary', [ChargeController::class, 'summary']);
     Route::apiResource('charges', ChargeController::class);
     Route::patch('charges/{charge}/status', [ChargeController::class, 'updateStatus']);
-    Route::post('charges/{charge}/resend-notification', [ChargeController::class, 'resendNotification']);
     Route::patch('charges/{charge}/mark-paid', [ChargeController::class, 'markAsPaid']);
     Route::patch('charges/{charge}/cancel', [ChargeController::class, 'cancel']);
+    Route::post('charges/{charge}/resend-notification', [ChargeController::class, 'resend']);
 });
 
 /** API Assinatura */
@@ -218,4 +218,5 @@ Route::prefix('api')->middleware('auth:sanctum')->group(function () {
     Route::patch('charges/{id}/mark-paid', [ChargeController::class, 'markAsPaid']);
     Route::patch('charges/{id}/cancel', [ChargeController::class, 'cancel']);
     Route::post('charges/{id}/resend', [ChargeController::class, 'resend']);
+    Route::post('charges/{charge}/resend-notification', [ChargeController::class, 'resend']);
 });

@@ -6,9 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Models\Charge;
 use App\Models\MercadoPagoConfig;
 use App\Models\MercadoPagoLog;
+use App\Services\MailService;
 use App\Services\MercadoPagoService;
+use App\Services\ResellerChargeService;
+use App\Services\SubscriptionChargeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class MercadoPagoWebhookController extends Controller
@@ -88,6 +92,22 @@ class MercadoPagoWebhookController extends Controller
                                 'paid_at' => now(),
                                 'mp_payment_id' => $paymentId,
                             ]);
+
+                            // Processar serviços automáticos (revenda, assinatura, avulso)
+                            ResellerChargeService::handleChargePaid($charge->id);
+                            SubscriptionChargeService::handleSubscriptionChargePaid($charge->id);
+
+                            // Enviar e-mail de confirmação
+                            $client = DB::table('clients')->where('id', $charge->client_id)->first();
+                            if ($client && $client->email) {
+                                MailService::paymentConfirmed($client->email, [
+                                    'name'           => $client->name,
+                                    'amount'         => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
+                                    'description'    => $charge->description ?? 'Cobrança',
+                                    'paid_at'        => now()->format('d/m/Y H:i'),
+                                    'payment_method' => $paymentData['payment_method_id'] ?? $charge->payment_method,
+                                ]);
+                            }
                             break;
 
                         case 'rejected':

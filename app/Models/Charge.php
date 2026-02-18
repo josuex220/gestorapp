@@ -14,6 +14,7 @@ class Charge extends Model
     protected $fillable = [
         'user_id',
         'client_id',
+        'subscription_id',
         'amount',
         'due_date',
         'payment_method',
@@ -27,6 +28,8 @@ class Charge extends Model
         'saved_card_id',
         'installments',
         'cancellation_reason',
+        'proof_path',
+        'proof_uploaded_at'
     ];
 
     protected $casts = [
@@ -34,6 +37,7 @@ class Charge extends Model
         'due_date' => 'date',
         'notification_channels' => 'array',
         'paid_at' => 'datetime',
+        'proof_uploaded_at' => 'datetime',
         'cancelled_at' => 'datetime',
         'last_notification_at' => 'datetime',
         'notification_count' => 'integer',
@@ -74,6 +78,11 @@ class Charge extends Model
     public function savedCard(): BelongsTo
     {
         return $this->belongsTo(SavedCard::class);
+    }
+
+    public function subscription(): BelongsTo
+    {
+        return $this->belongsTo(Subscription::class);
     }
 
     // ==================== SCOPES ====================

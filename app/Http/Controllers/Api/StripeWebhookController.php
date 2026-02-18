@@ -3,16 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Mail\PaymentConfirmedMail;
-use App\Mail\PaymentFailedMail;
-use App\Mail\SubscriptionCancelledMail;
 use App\Models\AdminIntegration;
 use App\Models\PlatformInvoice;
 use App\Models\User;
+use App\Services\MailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class StripeWebhookController extends Controller
 {
@@ -118,18 +115,23 @@ class StripeWebhookController extends Controller
             ]
         );
 
-        // Send confirmation email
+        // Send confirmation email via MailService
         try {
             $amount = ($invoice->amount_paid ?? 0) / 100;
             $invoiceNumber = $invoice->number ?? 'N/A';
             $description = $invoice->lines->data[0]->description ?? 'Assinatura';
             $pdfUrl = $invoice->invoice_pdf ?? null;
 
-            Mail::to($user->email)->queue(
-                new PaymentConfirmedMail($user, $amount, $invoiceNumber, $description, $pdfUrl)
-            );
+            MailService::paymentConfirmed($user->email, [
+                'name'           => $user->name,
+                'amount'         => 'R$ ' . number_format($amount, 2, ',', '.'),
+                'invoice_number' => $invoiceNumber,
+                'description'    => $description,
+                'pdf_url'        => $pdfUrl,
+                'event_type'     => $eventType,
+            ]);
 
-            Log::info("invoice.paid: confirmation email queued for user {$user->id}");
+            Log::info("invoice.paid: confirmation email sent for user {$user->id}");
         } catch (\Exception $e) {
             Log::error("invoice.paid: failed to send email to user {$user->id}", [
                 'error' => $e->getMessage(),
@@ -152,17 +154,20 @@ class StripeWebhookController extends Controller
 
         $user->update(['status' => 'overdue']);
 
-        // Send email notification
+        // Send email notification via MailService
         try {
             $amount = ($invoice->amount_due ?? 0) / 100;
             $invoiceNumber = $invoice->number ?? 'N/A';
             $hostedUrl = $invoice->hosted_invoice_url ?? null;
 
-            Mail::to($user->email)->queue(
-                new PaymentFailedMail($user, $amount, $invoiceNumber, $hostedUrl)
-            );
+            MailService::paymentFailed($user->email, [
+                'name'           => $user->name,
+                'amount'         => 'R$ ' . number_format($amount, 2, ',', '.'),
+                'invoice_number' => $invoiceNumber,
+                'payment_url'    => $hostedUrl,
+            ]);
 
-            Log::info("invoice.payment_failed: email queued for user {$user->id}");
+            Log::info("invoice.payment_failed: email sent for user {$user->id}");
         } catch (\Exception $e) {
             Log::error("invoice.payment_failed: failed to send email to user {$user->id}", [
                 'error' => $e->getMessage(),
@@ -233,12 +238,13 @@ class StripeWebhookController extends Controller
             'description' => 'Cancelamento - ' . ($planName ?? 'Assinatura'),
         ]);
 
-        // Send cancellation email
+        // Send cancellation email via MailService
         try {
-            Mail::to($user->email)->queue(
-                new SubscriptionCancelledMail($user, $planName)
-            );
-            Log::info("subscription.deleted: cancellation email queued for user {$user->id}");
+            MailService::subscriptionCancelled($user->email, [
+                'name'      => $user->name,
+                'plan_name' => $planName ?? 'Assinatura',
+            ]);
+            Log::info("subscription.deleted: cancellation email sent for user {$user->id}");
         } catch (\Exception $e) {
             Log::error("subscription.deleted: failed to send email to user {$user->id}", [
                 'error' => $e->getMessage(),

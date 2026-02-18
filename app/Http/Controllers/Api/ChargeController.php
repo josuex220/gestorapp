@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\MailService;
 use App\Services\ResellerChargeService;
+use App\Services\SubscriptionChargeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -108,6 +110,7 @@ class ChargeController extends Controller
             'notification_channels.*'=> 'in:email,whatsapp,telegram',
             'saved_card_id'          => 'nullable|string',
             'installments'           => 'nullable|integer|min:1|max:12',
+            'subscription_id'        => 'nullable|string|exists:subscriptions,id',
         ]);
 
         // Get client info
@@ -123,6 +126,7 @@ class ChargeController extends Controller
             'id'                    => $id,
             'user_id'               => $user->id,
             'client_id'             => $validated['client_id'],
+            'subscription_id'       => $validated['subscription_id'] ?? null,
             'amount'                => $validated['amount'],
             'due_date'              => $validated['due_date'],
             'payment_method'        => $validated['payment_method'],
@@ -142,6 +146,17 @@ class ChargeController extends Controller
             ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
             ->where('charges.id', $id)
             ->first();
+
+        // Enviar e-mail de nova cobrança ao cliente
+        if ($client->email) {
+            MailService::chargeCreated($client->email, [
+                'name'           => $client->name,
+                'amount'         => 'R$ ' . number_format($validated['amount'], 2, ',', '.'),
+                'due_date'       => \Carbon\Carbon::parse($validated['due_date'])->format('d/m/Y'),
+                'description'    => $validated['description'] ?? 'Cobrança',
+                'payment_method' => $validated['payment_method'],
+            ]);
+        }
 
         return response()->json($this->transformCharge($charge), 201);
     }
@@ -193,6 +208,9 @@ class ChargeController extends Controller
             if ($validated['status'] === 'paid') {
                 $updateData['paid_at'] = now();
                 ResellerChargeService::handleChargePaid($id);
+                SubscriptionChargeService::handleSubscriptionChargePaid($id);
+                $this->handleStandaloneChargePaid($id);
+                $this->sendPaidEmail($id);
             } elseif ($validated['status'] === 'cancelled') {
                 $updateData['cancelled_at'] = now();
             }
@@ -256,6 +274,12 @@ class ChargeController extends Controller
             $updateData['paid_at'] = now();
             // Auto-renew sub-account if this is a reseller charge
             ResellerChargeService::handleChargePaid($id);
+            // Gerar Payment para cobranças de assinatura
+            SubscriptionChargeService::handleSubscriptionChargePaid($id);
+            // Gerar Payment para cobranças avulsas
+            $this->handleStandaloneChargePaid($id);
+            // Enviar e-mail de confirmação
+            $this->sendPaidEmail($id);
         } elseif ($validated['status'] === 'cancelled') {
             $updateData['cancelled_at'] = now();
         }
@@ -279,15 +303,50 @@ class ChargeController extends Controller
     {
         $user = Auth::user();
         $charge = DB::table('charges')
-            ->where('id', $id)
-            ->where('user_id', $user->id)
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email')
+            ->where('charges.id', $id)
+            ->where('charges.user_id', $user->id)
             ->first();
 
         if (!$charge) {
             return response()->json(['message' => 'Cobrança não encontrada'], 404);
         }
 
-        // TODO: dispatch notification job
+        // Enviar e-mail de cobrança usando template do banco
+        $channels = json_decode($charge->notification_channels ?? '["email"]', true);
+
+        if (in_array('email', $channels) && $charge->client_email) {
+            $dueDate = \Carbon\Carbon::parse($charge->due_date);
+            $now = now()->startOfDay();
+            $isOverdue = $dueDate->lt($now);
+
+            // Escolher template baseado no status
+            if ($isOverdue || $charge->status === 'overdue') {
+                $slug = 'charge_overdue';
+                $vars = [
+                    'client_name'        => $charge->client_name ?? 'Cliente',
+                    'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+                    'charge_description' => $charge->description ?? 'Cobrança',
+                    'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
+                    'due_date'           => $dueDate->format('d/m/Y'),
+                    'days_overdue'       => (string) $dueDate->diffInDays($now),
+                    'payment_link'       => $charge->mp_init_point ?? '#',
+                ];
+            } else {
+                $slug = 'charge_created';
+                $vars = [
+                    'client_name'        => $charge->client_name ?? 'Cliente',
+                    'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+                    'charge_description' => $charge->description ?? 'Cobrança',
+                    'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
+                    'due_date'           => $dueDate->format('d/m/Y'),
+                    'payment_link'       => $charge->mp_init_point ?? '#',
+                ];
+            }
+
+            MailService::sendTemplate($charge->client_email, $slug, $vars);
+        }
 
         DB::table('charges')->where('id', $id)->update([
             'last_notification_at' => now(),
@@ -295,7 +354,13 @@ class ChargeController extends Controller
             'updated_at'           => now(),
         ]);
 
-        return response()->json(['message' => 'Notificação reenviada com sucesso']);
+        $updatedCharge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email', 'clients.phone as client_phone')
+            ->where('charges.id', $id)
+            ->first();
+
+        return response()->json($this->transformCharge($updatedCharge));
     }
 
     /**
@@ -324,6 +389,12 @@ class ChargeController extends Controller
 
         // Auto-renew reseller sub-account if applicable
         ResellerChargeService::handleChargePaid($id);
+        // Gerar Payment para cobranças de assinatura
+        SubscriptionChargeService::handleSubscriptionChargePaid($id);
+        // Gerar Payment para cobranças avulsas
+        $this->handleStandaloneChargePaid($id);
+        // Enviar e-mail de confirmação
+        $this->sendPaidEmail($id);
 
         $updatedCharge = DB::table('charges')
             ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
@@ -385,14 +456,108 @@ class ChargeController extends Controller
         $charges = $query->get();
 
         return response()->json([
-            'pending_count'  => $charges->where('status', 'pending')->count(),
-            'pending_amount' => (float) $charges->where('status', 'pending')->sum('amount'),
-            'paid_count'     => $charges->where('status', 'paid')->count(),
-            'paid_amount'    => (float) $charges->where('status', 'paid')->sum('amount'),
-            'overdue_count'  => $charges->where('status', 'overdue')->count(),
-            'overdue_amount' => (float) $charges->where('status', 'overdue')->sum('amount'),
-            'total_count'    => $charges->count(),
-            'total_amount'   => (float) $charges->sum('amount'),
+            'pending_count'    => $charges->where('status', 'pending')->count(),
+            'pending_amount'   => (float) $charges->where('status', 'pending')->sum('amount'),
+            'paid_count'       => $charges->where('status', 'paid')->count(),
+            'paid_amount'      => (float) $charges->where('status', 'paid')->sum('amount'),
+            'overdue_count'    => $charges->where('status', 'overdue')->count(),
+            'overdue_amount'   => (float) $charges->where('status', 'overdue')->sum('amount'),
+            'cancelled_count'  => $charges->where('status', 'cancelled')->count(),
+            'cancelled_amount' => (float) $charges->where('status', 'cancelled')->sum('amount'),
+            'total_count'      => $charges->count(),
+            'total_amount'     => (float) $charges->sum('amount'),
+        ]);
+    }
+
+    // ─── Helper ──────────────────────────────────────────────────────────
+
+    /**
+     * Gera um registro de Payment para cobranças avulsas (sem subscription_id nem reseller).
+     * Cobranças de assinatura e revenda já são tratadas pelos seus respectivos Services.
+     */
+    private function handleStandaloneChargePaid(string $chargeId): void
+    {
+        $charge = DB::table('charges')->where('id', $chargeId)->first();
+
+        if (!$charge) {
+            return;
+        }
+
+        // Pular se já é tratada por outro service (assinatura ou revenda)
+        if ($charge->subscription_id || ($charge->reseller_account_id ?? null)) {
+            return;
+        }
+
+        // Verificar se já existe Payment para esta cobrança
+        $existingPayment = DB::table('payments')
+            ->where('charge_id', $chargeId)
+            ->exists();
+
+        if ($existingPayment) {
+            return;
+        }
+
+        // Calcular taxa baseada no método de pagamento
+        $feeRates = [
+            'pix' => 0.00,        // 0.99%
+            'boleto' => 0.00,      // 1.99%
+            'credit_card' => 0.00, // 3.99%
+        ];
+
+        $feeRate = $feeRates[$charge->payment_method] ?? 0.00;
+        $fee = round((float) $charge->amount * $feeRate, 2);
+        $netAmount = round((float) $charge->amount - $fee, 2);
+
+        DB::table('payments')->insert([
+            'id' => (string) Str::uuid(),
+            'user_id' => $charge->user_id,
+            'client_id' => $charge->client_id,
+            'charge_id' => $chargeId,
+            'subscription_id' => null,
+            'plan_id' => null,
+            'amount' => $charge->amount,
+            'fee' => $fee,
+            'net_amount' => $netAmount,
+            'payment_method' => $charge->payment_method,
+            'status' => 'completed',
+            'description' => $charge->description ?? 'Pagamento de cobrança avulsa',
+            'transaction_id' => 'TXN_' . strtoupper(substr(md5($chargeId . now()), 0, 12)),
+            'completed_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * Envia e-mail de confirmação de pagamento ao cliente da cobrança.
+     */
+    private function sendPaidEmail(string $chargeId): void
+    {
+        $charge = DB::table('charges')
+            ->leftJoin('clients', 'charges.client_id', '=', 'clients.id')
+            ->select('charges.*', 'clients.name as client_name', 'clients.email as client_email')
+            ->where('charges.id', $chargeId)
+            ->first();
+
+        if (!$charge || !$charge->client_email) {
+            return;
+        }
+
+        $user = DB::table('users')->where('id', $charge->user_id)->first();
+
+        $methodLabels = [
+            'pix'         => 'PIX',
+            'boleto'      => 'Boleto',
+            'credit_card' => 'Cartão de Crédito',
+        ];
+
+        MailService::sendTemplate($charge->client_email, 'payment_confirmed', [
+            'client_name'        => $charge->client_name ?? 'Cliente',
+            'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+            'charge_description' => $charge->description ?? 'Cobrança',
+            'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
+            'payment_date'       => now()->format('d/m/Y H:i'),
+            'payment_method'     => $methodLabels[$charge->payment_method] ?? $charge->payment_method,
         ]);
     }
 
@@ -426,6 +591,7 @@ class ChargeController extends Controller
             'id'                    => $charge->id,
             'user_id'               => $charge->user_id,
             'client_id'             => $charge->client_id,
+            'subscription_id'       => $charge->subscription_id ?? null,
             'client_name'           => $charge->client_name,
             'client_email'          => $charge->client_email,
             'client_phone'          => $charge->client_phone ?? null,

@@ -43,6 +43,22 @@ class PaymentController extends Controller
             $query->where('client_id', $request->client_id);
         }
 
+        // Filtro por origem: charge (avulsa), subscription, reseller
+        if ($request->filled('source') && $request->source !== 'all') {
+            match ($request->source) {
+                'charge' => $query->whereNotNull('charge_id')->whereNull('subscription_id'),
+                'subscription' => $query->whereNotNull('subscription_id'),
+                'reseller' => $query->where(function ($q) {
+                    $q->whereHas('charge', function ($cq) {
+                        $cq->whereNotNull('reseller_account_id');
+                    })->orWhereHas('plan', function ($pq) {
+                        $pq->where('category', 'reseller');
+                    });
+                }),
+                default => null,
+            };
+        }
+
         if ($request->filled('date_from') || $request->filled('date_to')) {
             $query->dateRange(
                 $request->input('date_from'),
@@ -193,12 +209,12 @@ class PaymentController extends Controller
     private function getFeeRate(string $paymentMethod): float
     {
         return match ($paymentMethod) {
-            'pix' => 0.02,           // 2%
-            'boleto' => 0.01,        // 1%
-            'credit_card' => 0.03,   // 3%
-            'debit_card' => 0.015,   // 1.5%
-            'transfer' => 0.005,     // 0.5%
-            default => 0.02,
+            'pix' => 0.00,           // 2%
+            'boleto' => 0.00,        // 1%
+            'credit_card' => 0.00,   // 3%
+            'debit_card' => 0.00,   // 1.5%
+            'transfer' => 0.00,     // 0.5%
+            default => 0.00,
         };
     }
 

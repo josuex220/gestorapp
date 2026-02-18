@@ -3,13 +3,17 @@
 use App\Http\Controllers\Admin\AdminAuthController;
 use App\Http\Controllers\Admin\AdminClientController;
 use App\Http\Controllers\Admin\AdminDashboardController;
+use App\Http\Controllers\Admin\AdminEmailSettingsController;
+use App\Http\Controllers\Admin\AdminEmailTemplateController;
 use App\Http\Controllers\Admin\AdminFaqController;
 use App\Http\Controllers\Admin\AdminIntegrationController;
 use App\Http\Controllers\Admin\AdminInvoiceController;
 use App\Http\Controllers\Admin\AdminLearningController;
+use App\Http\Controllers\Admin\AdminMailLogController;
 use App\Http\Controllers\Admin\AdminPlanController;
 use App\Http\Controllers\Admin\AdminProfileController;
 use App\Http\Controllers\Admin\AdminTicketController;
+use App\Http\Controllers\Api\MailgunController;
 use App\Http\Resources\Admin\InvoiceResource;
 use App\Models\Invoice;
 use Illuminate\Support\Facades\Route;
@@ -104,4 +108,25 @@ Route::middleware(['auth:sanctum', 'is_admin'])->group(function () {
     Route::post('learning/upload/thumbnail', [AdminLearningController::class, 'uploadThumbnail']);
     Route::post('learning/upload/attachment', [AdminLearningController::class, 'uploadAttachment']);
 
+    // Mailgun — E-mail transacional da plataforma
+    Route::post('mailgun/send', [MailgunController::class, 'send']);
+    Route::post('mailgun/send-html', [MailgunController::class, 'sendHtml']);
+    Route::post('mailgun/test', [MailgunController::class, 'test']);
+
+    // Mail Logs — Histórico de e-mails enviados
+    Route::get('mail-logs', [AdminMailLogController::class, 'index']);
+
+    // Email Templates — Templates editáveis de e-mail
+    Route::get('email-templates', [AdminEmailTemplateController::class, 'index']);
+    Route::post('email-templates', [AdminEmailTemplateController::class, 'store']);
+    Route::get('email-templates/{template}', [AdminEmailTemplateController::class, 'show']);
+    Route::put('email-templates/{template}', [AdminEmailTemplateController::class, 'update']);
+    Route::delete('email-templates/{template}', [AdminEmailTemplateController::class, 'destroy']);
+    Route::post('email-templates/{template}/preview', [AdminEmailTemplateController::class, 'preview']);
+    Route::post('email-templates/{template}/send-test', [AdminEmailTemplateController::class, 'sendTest']);
+
+    // Email Settings — Logo e configurações visuais dos e-mails
+    Route::get('email-settings/logo', [AdminEmailSettingsController::class, 'getLogo']);
+    Route::post('email-settings/logo', [AdminEmailSettingsController::class, 'uploadLogo']);
+    Route::delete('email-settings/logo', [AdminEmailSettingsController::class, 'deleteLogo']);
 });

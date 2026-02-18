@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ResellerNotificationSetting;
 use App\Models\ResellerRenewalLog;
 use App\Models\User;
+use App\Services\MailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -241,6 +242,13 @@ class ResellerController extends Controller
             'status'              => 'active',
         ]);
 
+        // Enviar e-mail de boas-vindas à sub-conta
+        MailService::welcome($account->email, [
+            'name'     => $account->name,
+            'email'    => $account->email,
+            'subject'  => 'Bem-vindo! Sua conta foi criada',
+        ]);
+
         $response = $this->mapAccountResponse($account);
 
         // ── Auto-charge: gerar cobrança automaticamente ──
@@ -297,6 +305,23 @@ class ResellerController extends Controller
             if ($provider === 'pix_manual') {
                 $baseUrl = config('app.frontend_url', config('app.url'));
                 $response['auto_charge']['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
+            }
+
+            // Enviar e-mail de cobrança de revenda para a sub-conta
+            if ($account->email) {
+                $dueDate = now()->addDays(3);
+                MailService::sendTemplate($account->email, 'reseller_charge_created', [
+                    'account_name'       => $account->name,
+                    'account_email'      => $account->email,
+                    'reseller_name'      => $user->company_name ?? $user->name,
+                    'charge_description' => "Cobrança sub-conta: {$account->name}",
+                    'charge_amount'      => 'R$ ' . number_format((float) $validated['price'], 2, ',', '.'),
+                    'due_date'           => $dueDate->format('d/m/Y'),
+                    'validity_days'      => '30',
+                    'current_expiry'     => $account->reseller_expires_at ? $account->reseller_expires_at->format('d/m/Y') : 'Não definida',
+                    'payment_link'       => $response['auto_charge']['payment_url'] ?? '#',
+                    'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+                ]);
             }
         }
 
@@ -610,8 +635,21 @@ class ResellerController extends Controller
             $response['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
         }
 
-        // For Mercado Pago, the preference will be created when the user
-        // copies the link (same flow as regular charges)
+        // Enviar e-mail de cobrança de revenda para a sub-conta
+        if ($account->email) {
+            MailService::sendTemplate($account->email, 'reseller_charge_created', [
+                'account_name'       => $account->name,
+                'account_email'      => $account->email,
+                'reseller_name'      => $reseller->company_name ?? $reseller->name,
+                'charge_description' => $description,
+                'charge_amount'      => 'R$ ' . number_format((float) $validated['amount'], 2, ',', '.'),
+                'due_date'           => \Carbon\Carbon::parse($validated['due_date'])->format('d/m/Y'),
+                'validity_days'      => '30',
+                'current_expiry'     => $account->reseller_expires_at ? $account->reseller_expires_at->format('d/m/Y') : 'Não definida',
+                'payment_link'       => $response['payment_url'] ?? '#',
+                'company_name'       => $reseller->company_name ?? $reseller->name ?? 'Sistema',
+            ]);
+        }
 
         return response()->json($response, 201);
     }
