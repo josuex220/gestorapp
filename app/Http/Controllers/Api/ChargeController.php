@@ -615,6 +615,8 @@ class ChargeController extends Controller
             'mp_payment_id'         => $charge->mp_payment_id ?? null,
             'mp_init_point'         => $charge->mp_init_point ?? null,
             'mp_sandbox_init_point' => $charge->mp_sandbox_init_point ?? null,
+            // Reseller origin
+            'reseller_charge_account_id' => $charge->reseller_charge_account_id ?? null,
             // Proof fields
             'proof_path'            => $charge->proof_path ?? null,
             'proof_uploaded_at'     => $charge->proof_uploaded_at ?? null,

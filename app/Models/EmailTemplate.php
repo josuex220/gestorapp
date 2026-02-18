@@ -46,6 +46,10 @@ class EmailTemplate extends Model
             $html = str_replace("{{{$key}}}", (string) $value, $html);
         }
 
+        foreach ($variables as $key => $value) {
+            $html = str_replace("{{{{{$key}}}}}", (string) $value, $html);
+        }
+
         return $html;
     }
 
@@ -57,6 +61,9 @@ class EmailTemplate extends Model
         $subject = $this->subject;
         foreach ($variables as $key => $value) {
             $subject = str_replace("{{{$key}}}", (string) $value, $subject);
+        }
+        foreach ($variables as $key => $value) {
+            $subject = str_replace("{{{{{$key}}}}}", (string) $value, $subject);
         }
         return $subject;
     }
