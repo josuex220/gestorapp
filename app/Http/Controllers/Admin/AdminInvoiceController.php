@@ -82,7 +82,7 @@ class AdminInvoiceController extends Controller
                 'event_type'    => $invoice->event_type,
                 'due_date'      => $invoice->due_date,
                 'paid_at'       => $invoice->paid_at,
-                'period'        => $invoice->period ?? '',
+                'period'        => $invoice->period,
                 'stripe_invoice_id' => $invoice->stripe_invoice_id,
                 'created_at'    => $invoice->created_at,
                 'updated_at'    => $invoice->updated_at,
@@ -150,6 +150,9 @@ class AdminInvoiceController extends Controller
     {
         $invoice = PlatformInvoice::with(['user.platformPlan'])->findOrFail($id);
 
+        $dueDate = $invoice->due_date;
+        $periodLabel = $invoice->period;
+
         return response()->json([
             'id'            => $invoice->id,
             'client_id'     => $invoice->user_id,
@@ -159,9 +162,9 @@ class AdminInvoiceController extends Controller
             'amount'        => (float) $invoice->amount,
             'status'        => $invoice->status,
             'event_type'    => $invoice->event_type,
-            'due_date'      => $invoice->due_date,
+            'due_date'      => $dueDate,
             'paid_at'       => $invoice->paid_at,
-            'period'        => $invoice->period ?? '',
+            'period'        => $periodLabel,
             'stripe_invoice_id' => $invoice->stripe_invoice_id,
             'created_at'    => $invoice->created_at,
             'updated_at'    => $invoice->updated_at,
@@ -191,6 +194,7 @@ class AdminInvoiceController extends Controller
             'status'        => $invoice->status,
             'event_type'    => $invoice->event_type,
             'due_date'      => $invoice->due_date,
+            'period'        => $invoice->period,
             'paid_at'       => $invoice->paid_at,
         ]);
     }

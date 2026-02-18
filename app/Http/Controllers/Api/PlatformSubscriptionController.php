@@ -291,6 +291,8 @@ class PlatformSubscriptionController extends Controller
                 'description' => ($isReactivation ? 'Reativação' : 'Ativação') . ' de assinatura via checkout - Plano ' . ($user->platformPlan->name ?? 'N/A'),
                 'event_type' => $isReactivation ? 'reactivation' : 'activation',
                 'paid_at' => now(),
+                'due_date' => now()->toDateString(),
+                'period' => now()->format('m/Y'),
             ]);
 
             // Enviar e-mail de ativação/reativação
@@ -366,6 +368,8 @@ class PlatformSubscriptionController extends Controller
                         'description' => 'Reativação de assinatura (reversão de cancelamento) - Plano ' . ($user->platformPlan->name ?? 'N/A'),
                         'event_type' => 'reactivation',
                         'paid_at' => now(),
+                        'due_date' => now()->toDateString(),
+                        'period' => now()->format('m/Y'),
                     ]);
 
                     // Enviar e-mail de reativação

@@ -2,13 +2,12 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class PlatformInvoice extends Model
 {
-    use HasUuids;
+    use HasFactory;
 
     protected $fillable = [
         'user_id',
@@ -20,14 +19,17 @@ class PlatformInvoice extends Model
         'description',
         'event_type',
         'paid_at',
+        'due_date',
+        'period',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'paid_at' => 'datetime',
+        'due_date' => 'date',
     ];
 
-    public function user(): BelongsTo
+    public function user()
     {
         return $this->belongsTo(User::class);
     }

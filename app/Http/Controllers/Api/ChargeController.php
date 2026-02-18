@@ -499,12 +499,12 @@ class ChargeController extends Controller
 
         // Calcular taxa baseada no método de pagamento
         $feeRates = [
-            'pix' => 0.00,        // 0.99%
-            'boleto' => 0.00,      // 1.99%
-            'credit_card' => 0.00, // 3.99%
+            'pix' => 0.0099,        // 0.99%
+            'boleto' => 0.0199,      // 1.99%
+            'credit_card' => 0.0399, // 3.99%
         ];
 
-        $feeRate = $feeRates[$charge->payment_method] ?? 0.00;
+        $feeRate = $feeRates[$charge->payment_method] ?? 0.02;
         $fee = round((float) $charge->amount * $feeRate, 2);
         $netAmount = round((float) $charge->amount - $fee, 2);
 

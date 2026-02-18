@@ -102,6 +102,10 @@ class StripeWebhookController extends Controller
         }
 
         // Store/update platform invoice record
+        $dueDate = isset($invoice->due_date) && $invoice->due_date
+            ? \Carbon\Carbon::createFromTimestamp($invoice->due_date)->toDateString()
+            : now()->toDateString();
+
         PlatformInvoice::updateOrCreate(
             ['stripe_invoice_id' => $invoice->id],
             [
@@ -111,6 +115,8 @@ class StripeWebhookController extends Controller
                 'status' => 'paid',
                 'event_type' => $eventType,
                 'paid_at' => now(),
+                'due_date' => $dueDate,
+                'period' => now()->format('m/Y'),
                 'description' => $invoice->lines->data[0]->description ?? 'Assinatura',
             ]
         );
@@ -235,6 +241,8 @@ class StripeWebhookController extends Controller
             'status' => 'void',
             'event_type' => 'cancellation',
             'paid_at' => null,
+            'due_date' => now()->toDateString(),
+            'period' => now()->format('m/Y'),
             'description' => 'Cancelamento - ' . ($planName ?? 'Assinatura'),
         ]);
 
