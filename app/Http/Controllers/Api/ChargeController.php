@@ -147,14 +147,15 @@ class ChargeController extends Controller
             ->where('charges.id', $id)
             ->first();
 
-        // Enviar e-mail de nova cobrança ao cliente
-        if ($client->email) {
+        // Enviar e-mail de nova cobrança ao cliente (se habilitado nas preferências)
+        if ($client->email && MailService::isNotificationEnabled($request->user(), 'new_charge')) {
             MailService::chargeCreated($client->email, [
-                'name'           => $client->name,
-                'amount'         => 'R$ ' . number_format($validated['amount'], 2, ',', '.'),
-                'due_date'       => \Carbon\Carbon::parse($validated['due_date'])->format('d/m/Y'),
-                'description'    => $validated['description'] ?? 'Cobrança',
-                'payment_method' => $validated['payment_method'],
+                'client_name'         => $client->name,
+                'charge_amount'       => 'R$ ' . number_format($validated['amount'], 2, ',', '.'),
+                'due_date'            => \Carbon\Carbon::parse($validated['due_date'])->format('d/m/Y'),
+                'charge_description'  => $validated['description'] ?? 'Cobrança',
+                'payment_link'        => "https://cobgestmax.com/pix/{$id}",
+                'company_name'        => $request->user()->company_name ?? 'CobGest Max',
             ]);
         }
 
@@ -326,7 +327,7 @@ class ChargeController extends Controller
                 $slug = 'charge_overdue';
                 $vars = [
                     'client_name'        => $charge->client_name ?? 'Cliente',
-                    'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+                    'company_name'       => $user->company_name ?? $user->name ?? 'CobGest Max',
                     'charge_description' => $charge->description ?? 'Cobrança',
                     'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
                     'due_date'           => $dueDate->format('d/m/Y'),
@@ -337,7 +338,7 @@ class ChargeController extends Controller
                 $slug = 'charge_created';
                 $vars = [
                     'client_name'        => $charge->client_name ?? 'Cliente',
-                    'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+                    'company_name'       => $user->company_name ?? $user->name ?? 'CobGest Max',
                     'charge_description' => $charge->description ?? 'Cobrança',
                     'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
                     'due_date'           => $dueDate->format('d/m/Y'),
@@ -553,7 +554,7 @@ class ChargeController extends Controller
 
         MailService::sendTemplate($charge->client_email, 'payment_confirmed', [
             'client_name'        => $charge->client_name ?? 'Cliente',
-            'company_name'       => $user->company_name ?? $user->name ?? 'Sistema',
+            'company_name'       => $user->company_name ?? $user->name ?? 'CobGest Max',
             'charge_description' => $charge->description ?? 'Cobrança',
             'charge_amount'      => 'R$ ' . number_format((float) $charge->amount, 2, ',', '.'),
             'payment_date'       => now()->format('d/m/Y H:i'),

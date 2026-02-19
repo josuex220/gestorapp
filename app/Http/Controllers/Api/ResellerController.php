@@ -68,12 +68,21 @@ class ResellerController extends Controller
             }
         }
 
+        // Contar clientes próprios excluindo os que têm tag "sub-conta"
+        $subAccountEmails = $subAccounts->pluck('email')->filter()->toArray();
+        $ownClientsCount = \App\Models\Client::where('user_id', $user->id)
+            ->when(!empty($subAccountEmails), function ($q) use ($subAccountEmails) {
+                $q->whereNotIn('email', $subAccountEmails);
+            })
+            ->count();
+
         return response()->json([
-            'total_accounts'   => $totalAccounts,
-            'active_accounts'  => $activeAccounts,
-            'credits_used'     => $creditsUsed,
-            'credits_total'    => $isUnlimited ? -1 : $resellerCredits,
-            'credits_remaining'=> $isUnlimited ? -1 : max(0, $resellerCredits - $creditsUsed),
+            'total_accounts'    => $totalAccounts,
+            'active_accounts'   => $activeAccounts,
+            'credits_used'      => $creditsUsed,
+            'credits_total'     => $isUnlimited ? -1 : $resellerCredits,
+            'credits_remaining' => $isUnlimited ? -1 : max(0, $resellerCredits - $creditsUsed),
+            'own_clients_count' => $ownClientsCount,
         ]);
     }
 
@@ -270,6 +279,7 @@ class ResellerController extends Controller
                     'name'       => $account->name,
                     'email'      => $account->email,
                     'phone'      => $account->phone,
+                    'tags'       => json_encode(['sub-conta']),
                     'is_active'  => true,
                     'created_at' => now(),
                     'updated_at' => now(),
@@ -307,8 +317,8 @@ class ResellerController extends Controller
                 $response['auto_charge']['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
             }
 
-            // Enviar e-mail de cobrança de revenda para a sub-conta
-            if ($account->email) {
+            // Enviar e-mail de cobrança de revenda para a sub-conta (se habilitado nas preferências)
+            if ($account->email && MailService::isNotificationEnabled($user, 'reseller_charge_created')) {
                 $dueDate = now()->addDays(3);
                 MailService::sendTemplate($account->email, 'reseller_charge_created', [
                     'account_name'       => $account->name,
@@ -424,6 +434,7 @@ class ResellerController extends Controller
             ->where('reseller_id', $request->user()->id)
             ->firstOrFail();
 
+        $oldStatus = $account->status;
         $newStatus = $account->status === 'active' ? 'inactive' : 'active';
         $account->update(['status' => $newStatus]);
 
@@ -432,6 +443,37 @@ class ResellerController extends Controller
             User::where('reseller_id', $account->id)
                 ->where('status', 'active')
                 ->update(['status' => 'inactive']);
+        }
+
+        // Enviar e-mail de notificação sobre mudança de status (se habilitado nas preferências)
+        $reseller = $request->user();
+        if ($account->email) {
+            $baseVars = [
+                'account_name'  => $account->name,
+                'account_email' => $account->email,
+                'reseller_name' => $reseller->company_name ?? $reseller->name,
+                'company_name'  => $reseller->company_name ?? $reseller->name ?? 'Sistema',
+            ];
+
+            if ($newStatus === 'active') {
+                // Reativação
+                $slug = $oldStatus === 'inactive' ? 'reseller_account_reactivated' : 'reseller_account_activated';
+                $notifId = $oldStatus === 'inactive' ? 'reseller_account_reactivated' : 'reseller_account_activated';
+                if (MailService::isNotificationEnabled($reseller, $notifId)) {
+                    MailService::sendTemplate($account->email, $slug, array_merge($baseVars, [
+                        'expires_at' => $account->reseller_expires_at
+                            ? $account->reseller_expires_at->format('d/m/Y')
+                            : 'Não definida',
+                    ]));
+                }
+            } else {
+                // Desativação
+                if (MailService::isNotificationEnabled($reseller, 'reseller_account_deactivated')) {
+                    MailService::sendTemplate($account->email, 'reseller_account_deactivated', array_merge($baseVars, [
+                        'reason' => 'Conta desativada pelo revendedor',
+                    ]));
+                }
+            }
         }
 
         return response()->json($this->mapAccountResponse($account));
@@ -474,6 +516,20 @@ class ResellerController extends Controller
             'old_expires_at' => $oldExpiry,
             'new_expires_at' => $newExpiry,
         ]);
+
+        // Enviar e-mail de renovação para a sub-conta (se habilitado nas preferências)
+        $reseller = $request->user();
+        if ($account->email && MailService::isNotificationEnabled($reseller, 'reseller_account_renewed')) {
+            MailService::sendTemplate($account->email, 'reseller_account_renewed', [
+                'account_name'  => $account->name,
+                'account_email' => $account->email,
+                'reseller_name' => $reseller->company_name ?? $reseller->name,
+                'days'          => $days,
+                'old_expires_at' => $oldExpiry ? \Carbon\Carbon::parse($oldExpiry)->format('d/m/Y') : 'Não definida',
+                'new_expires_at' => \Carbon\Carbon::parse($newExpiry)->format('d/m/Y'),
+                'company_name'  => $reseller->company_name ?? $reseller->name ?? 'Sistema',
+            ]);
+        }
 
         return response()->json($this->mapAccountResponse($account));
     }
@@ -635,8 +691,8 @@ class ResellerController extends Controller
             $response['payment_url'] = "{$baseUrl}/pix/{$chargeId}";
         }
 
-        // Enviar e-mail de cobrança de revenda para a sub-conta
-        if ($account->email) {
+        // Enviar e-mail de cobrança de revenda para a sub-conta (se habilitado nas preferências)
+        if ($account->email && MailService::isNotificationEnabled($reseller, 'reseller_charge_created')) {
             MailService::sendTemplate($account->email, 'reseller_charge_created', [
                 'account_name'       => $account->name,
                 'account_email'      => $account->email,

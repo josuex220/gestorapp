@@ -13,8 +13,11 @@
         "jenssegers/agent": "^2.6",
         "laravel/framework": "^12.0",
         "laravel/sanctum": "^4.0",
+        "laravel/socialite": "^5.24",
         "laravel/tinker": "^2.10.1",
         "mercadopago/dx-php": "^3.8",
+        "socialiteproviders/apple": "^5.9",
+        "socialiteproviders/manager": "^4.8",
         "stripe/stripe-php": "^19.3"
     },
     "require-dev": {

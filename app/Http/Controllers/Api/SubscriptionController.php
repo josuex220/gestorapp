@@ -156,15 +156,17 @@ class SubscriptionController extends Controller
 
         $subscription->load(['client', 'plan']);
 
-        // Enviar e-mail de nova cobrança ao cliente
+        // Enviar e-mail de nova cobrança ao cliente (se habilitado nas preferências)
         $client = DB::table('clients')->where('id', $subscription->client_id)->first();
-        if ($client && $client->email) {
+        $user = Auth::user();
+        if ($client && $client->email && MailService::isNotificationEnabled($user, 'new_charge')) {
             MailService::chargeCreated($client->email, [
-                'name'           => $client->name,
-                'amount'         => 'R$ ' . number_format($subscription->amount, 2, ',', '.'),
-                'due_date'       => \Carbon\Carbon::parse($dueDate)->format('d/m/Y'),
-                'description'    => "Cobrança inicial - {$subscription->plan_name}",
-                'payment_method' => 'pix',
+                'client_name'         => $client->name,
+                'charge_amount'       => 'R$ ' . number_format($subscription->amount, 2, ',', '.'),
+                'due_date'            => \Carbon\Carbon::parse($dueDate)->format('d/m/Y'),
+                'charge_description'  => "Cobrança inicial - {$subscription->plan_name}",
+                'payment_method'      => 'pix',
+                'company_name'        => $user->company_name ?? $user->name ?? 'Sistema',
             ]);
         }
 
@@ -210,7 +212,57 @@ class SubscriptionController extends Controller
             'status' => 'required|in:active,suspended,cancelled',
         ]);
 
-        $subscription->update(['status' => $request->status]);
+        $oldStatus = $subscription->status;
+        $newStatus = $request->status;
+
+        // Atualizar campos conforme o novo status
+        $updateData = ['status' => $newStatus];
+
+        if ($newStatus === 'suspended') {
+            $updateData['suspended_at'] = now();
+            $updateData['suspension_reason'] = $request->input('reason');
+        } elseif ($newStatus === 'active' && $oldStatus === 'suspended') {
+            $updateData['suspended_at'] = null;
+            $updateData['suspension_reason'] = null;
+            $updateData['next_billing_date'] = $this->calculateNextBillingDate(
+                now(),
+                $subscription->cycle,
+                $subscription->custom_days
+            );
+        } elseif ($newStatus === 'cancelled') {
+            $updateData['cancelled_at'] = now();
+            $updateData['cancellation_reason'] = $request->input('reason');
+        }
+
+        $subscription->update($updateData);
+
+        // Enviar e-mail ao cliente conforme o novo status (se habilitado nas preferências)
+        $client = DB::table('clients')->where('id', $subscription->client_id)->first();
+        $user = $request->user();
+
+        if ($client && $client->email && $oldStatus !== $newStatus) {
+            $baseVars = [
+                'client_name'       => $client->name,
+                'plan_name'         => $subscription->plan_name,
+                'plan_amount'       => 'R$ ' . number_format($subscription->amount, 2, ',', '.'),
+                'next_billing_date' => $subscription->next_billing_date
+                    ? \Carbon\Carbon::parse($subscription->next_billing_date)->format('d/m/Y')
+                    : '-',
+                'company_name'      => $user->company_name ?? $user->name ?? 'Sistema',
+            ];
+
+            if ($newStatus === 'active' && MailService::isNotificationEnabled($user, 'subscription_activated')) {
+                MailService::subscriptionActivated($client->email, $baseVars);
+            } elseif ($newStatus === 'suspended' && MailService::isNotificationEnabled($user, 'subscription_suspended')) {
+                MailService::sendTemplate($client->email, 'subscription_suspended', array_merge($baseVars, [
+                    'reason' => $request->input('reason') ?? 'Não informado',
+                ]));
+            } elseif ($newStatus === 'cancelled' && MailService::isNotificationEnabled($user, 'subscription_cancelled')) {
+                MailService::subscriptionCancelled($client->email, array_merge($baseVars, [
+                    'end_date' => now()->format('d/m/Y'),
+                ]));
+            }
+        }
 
         return new SubscriptionResource($subscription->fresh()->load(['client', 'plan']));
     }

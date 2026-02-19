@@ -62,6 +62,7 @@ class EmailTemplate extends Model
         foreach ($variables as $key => $value) {
             $subject = str_replace("{{{$key}}}", (string) $value, $subject);
         }
+
         foreach ($variables as $key => $value) {
             $subject = str_replace("{{{{{$key}}}}}", (string) $value, $subject);
         }

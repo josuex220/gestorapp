@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\PlatformPlanController;
 use App\Http\Controllers\Api\PlatformSubscriptionController;
 use App\Http\Controllers\Api\ResellerController;
+use App\Http\Controllers\Api\SocialAuthController;
 use App\Http\Controllers\Api\StripeWebhookController;
 
 Route::get('/user', function (Request $request) {
@@ -220,3 +221,6 @@ Route::prefix('api')->middleware('auth:sanctum')->group(function () {
     Route::post('charges/{id}/resend', [ChargeController::class, 'resend']);
     Route::post('charges/{charge}/resend-notification', [ChargeController::class, 'resend']);
 });
+
+Route::get('auth/{provider}/redirect', [SocialAuthController::class, 'redirect']);
+Route::get('auth/{provider}/callback', [SocialAuthController::class, 'callback']);

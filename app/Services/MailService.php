@@ -24,6 +24,42 @@ use Illuminate\Support\Str;
  */
 class MailService
 {
+    // ─── Verificação de preferências de notificação ─────────────────────
+
+    /**
+     * Verifica se uma notificação específica está habilitada nas preferências do usuário.
+     * Busca na tabela user_settings o campo notification_preferences (JSON).
+     * Se não houver configuração, retorna true (padrão: habilitado).
+     */
+    public static function isNotificationEnabled($user, string $notificationId): bool
+    {
+        $settings = DB::table('user_settings')->where('user_id', $user->id)->first();
+
+        if (!$settings || !$settings->notification_preferences) {
+            return true; // Default: enviar se não há configuração
+        }
+
+        $preferences = json_decode($settings->notification_preferences, true);
+
+        if (!is_array($preferences)) {
+            return true;
+        }
+
+        foreach ($preferences as $category) {
+            if (!isset($category['settings']) || !is_array($category['settings'])) {
+                continue;
+            }
+            foreach ($category['settings'] as $setting) {
+                if (isset($setting['id']) && $setting['id'] === $notificationId) {
+                    return (bool) ($setting['enabled'] ?? true);
+                }
+            }
+        }
+
+        // Se a notificação não foi encontrada nas preferências, enviar por padrão
+        return true;
+    }
+
     // ─── Eventos de alto nível ────────────────────────────────────────────
 
     public static function paymentConfirmed(string $to, array $vars): bool
@@ -44,6 +80,11 @@ class MailService
     public static function subscriptionActivated(string $to, array $vars): bool
     {
         return self::sendTemplate($to, 'subscription_activated', $vars);
+    }
+
+    public static function subscriptionSuspended(string $to, array $vars): bool
+    {
+        return self::sendTemplate($to, 'subscription_suspended', $vars);
     }
 
     public static function subscriptionRenewed(string $to, array $vars): bool

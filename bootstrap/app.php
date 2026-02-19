@@ -22,6 +22,9 @@ return Application::configure(basePath: dirname(__DIR__))
         },
 
     )
+    ->withProviders([
+        \SocialiteProviders\Manager\ServiceProvider::class,
+    ])
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->append(UpdateSessionActivity::class);
         $middleware->append(CheckClientLimit::class);

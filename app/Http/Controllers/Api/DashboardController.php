@@ -3,8 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Resources\DashboardResource;
-use App\Http\Resources\TransactionResource;
 use App\Models\Charge;
 use App\Models\Payment;
 use App\Models\Subscription;
@@ -23,16 +21,27 @@ class DashboardController extends Controller
         $endOfMonth = $now->copy()->endOfMonth();
         $lastMonthStart = $now->copy()->subMonth()->startOfMonth();
         $lastMonthEnd = $now->copy()->subMonth()->endOfMonth();
+        $thirtyDaysAgo = $now->copy()->subDays(30);
 
-        // Métricas principais
-        $totalReceived = Payment::where('user_id', $userId)
+        // Total Recebido este Mês (cobranças pagas no mês atual)
+        $totalReceivedMonth = Charge::where('user_id', $userId)
+            ->where('status', 'paid')
             ->whereBetween('paid_at', [$startOfMonth, $endOfMonth])
             ->sum('amount');
 
-        $lastMonthReceived = Payment::where('user_id', $userId)
+        // Total Recebido últimos 30 dias (cobranças pagas nos últimos 30 dias)
+        $totalReceived30d = Charge::where('user_id', $userId)
+            ->where('status', 'paid')
+            ->where('paid_at', '>=', $thirtyDaysAgo)
+            ->sum('amount');
+
+        // Mês anterior para cálculo de crescimento (cobranças pagas)
+        $lastMonthReceived = Charge::where('user_id', $userId)
+            ->where('status', 'paid')
             ->whereBetween('paid_at', [$lastMonthStart, $lastMonthEnd])
             ->sum('amount');
 
+        // Total Pendente (cobranças pendentes + vencidas)
         $totalPending = Charge::where('user_id', $userId)
             ->whereIn('status', ['pending', 'overdue'])
             ->sum('amount');
@@ -41,29 +50,31 @@ class DashboardController extends Controller
             ->whereIn('status', ['pending', 'overdue'])
             ->count();
 
-        $paymentsCount = Payment::where('user_id', $userId)
+        $overdueCount = Charge::where('user_id', $userId)
+            ->where('status', 'overdue')
+            ->count();
+
+        // Ticket Médio (baseado em cobranças pagas no mês)
+        $paidChargesCount = Charge::where('user_id', $userId)
+            ->where('status', 'paid')
             ->whereBetween('paid_at', [$startOfMonth, $endOfMonth])
             ->count();
 
-        $averageTicket = $paymentsCount > 0 ? $totalReceived / $paymentsCount : 0;
+        $averageTicket = $paidChargesCount > 0 ? $totalReceivedMonth / $paidChargesCount : 0;
 
         // Cálculo de crescimento
         $growthPercentage = $lastMonthReceived > 0
-            ? (($totalReceived - $lastMonthReceived) / $lastMonthReceived) * 100
+            ? (($totalReceivedMonth - $lastMonthReceived) / $lastMonthReceived) * 100
             : 0;
 
         return response()->json([
-            'metrics' => [
-                'total_received' => round($totalReceived, 2),
-                'total_pending' => round($totalPending, 2),
-                'pending_count' => $pendingCount,
-                'average_ticket' => round($averageTicket, 2),
-                'growth_percentage' => round($growthPercentage, 1),
-            ],
-            'period' => [
-                'start' => $startOfMonth->toDateString(),
-                'end' => $endOfMonth->toDateString(),
-            ],
+            'total_received' => round($totalReceivedMonth, 2),
+            'total_received_30d' => round($totalReceived30d, 2),
+            'total_pending' => round($totalPending, 2),
+            'pending_count' => $pendingCount,
+            'overdue_count' => $overdueCount,
+            'average_ticket' => round($averageTicket, 2),
+            'growth_percentage' => round($growthPercentage, 1),
         ]);
     }
 
